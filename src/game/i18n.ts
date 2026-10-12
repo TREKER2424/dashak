@@ -1,5 +1,7 @@
 import type { Lang } from "./types";
 
+export type { Lang };
+
 const ru = {
   league: "Чувашская Премьер-Лига 2026",
   title: "Чувашский мяч",
@@ -411,4 +413,20 @@ export type MsgKey = keyof typeof ru;
 
 export function t(lang: Lang, key: MsgKey): string {
   return DICT[lang][key];
+}
+
+let active: Lang = "ru";
+
+export function setActiveLang(lang: Lang) {
+  active = lang === "en" ? "en" : "ru";
+  if (typeof document !== "undefined") document.documentElement.lang = active;
+}
+
+export function getLang(): Lang {
+  return active;
+}
+
+/** Interface copy. Russian stays the default; English is used only after the settings switch. */
+export function tr(ruText: string, enText: string): string {
+  return active === "en" ? enText : ruText;
 }

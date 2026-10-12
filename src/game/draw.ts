@@ -72,7 +72,20 @@ export function relaxNets(ball: Ball) {
   }
 }
 
+type PitchTheme = {
+  sky: [string, string, string];
+  stand: string;
+  tier: string;
+  grass: [string, string];
+  accent: string;
+};
+
+function pitchTheme(): PitchTheme {
+  return { sky: ["#0c2416", "#145c30", "#07110c"], stand: "#0d1612", tier: "#1a2c24", grass: ["#187a3a", "#1f9a48"], accent: "#8fe388" };
+}
+
 export function paintMatch(ctx: CanvasRenderingContext2D, w: number, h: number, field: FieldView) {
+  const theme = pitchTheme();
   const scale = h / Math.max(20, field.viewH);
   const fy = field.flipY ? -1 : 1;
   const shake = (field.cam.shake || 0) * 4;
@@ -89,14 +102,14 @@ export function paintMatch(ctx: CanvasRenderingContext2D, w: number, h: number, 
   const sky = ctx.createLinearGradient(0, 0, 0, h);
   const wet = field.weather === "rain";
   const cold = field.weather === "snow";
-  sky.addColorStop(0, wet ? "#141c24" : cold ? "#1a2228" : "#0c2416");
-  sky.addColorStop(0.42, wet ? "#1c2830" : cold ? "#243038" : "#145c30");
-  sky.addColorStop(1, "#07110c");
+  sky.addColorStop(0, wet ? "#141c24" : cold ? "#1a2228" : theme.sky[0]);
+  sky.addColorStop(0.42, wet ? "#1c2830" : cold ? "#243038" : theme.sky[1]);
+  sky.addColorStop(1, theme.sky[2]);
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, w, h);
 
-  drawStands(ctx, project, field.weatherT ?? 0, field.homeColor, field.awayColor);
-  drawGrass(ctx, project);
+  drawStands(ctx, project, field.weatherT ?? 0, field.homeColor, field.awayColor, theme);
+  drawGrass(ctx, project, theme);
   drawLines(ctx, project);
   if (field.offsideY != null) {
     ctx.save();
@@ -109,13 +122,13 @@ export function paintMatch(ctx: CanvasRenderingContext2D, w: number, h: number, 
     ]);
     ctx.restore();
   }
-  drawGoals(ctx, project, field);
+  drawGoals(ctx, project, field, theme);
   drawShadows(ctx, project, field);
   const sprites = field.players
     .filter((p) => p.on && !p.red)
     .map((p) => ({ p, y: p.y }))
     .sort((a, b) => a.y - b.y);
-  for (const { p } of sprites) drawPlayer(ctx, project, p, p.uid === field.controlledId, p.side === 0 ? field.homeColor : field.awayColor);
+  for (const { p } of sprites) drawPlayer(ctx, project, p, p.uid === field.controlledId, p.side === 0 ? field.homeColor : field.awayColor, theme.accent);
   if (field.official) drawOfficial(ctx, project, field.official);
   drawBall(ctx, project, field.ball);
   drawWeather(ctx, w, h, field);
@@ -182,10 +195,11 @@ function drawStands(
   time: number,
   homeColor: string,
   awayColor: string,
+  theme: PitchTheme,
 ) {
   const gap = 2.4;
   const depth = 11.6;
-  ctx.fillStyle = "#0d1612";
+  ctx.fillStyle = theme.stand;
   poly(ctx, project, [
     [-HALF_W - gap - depth - 1.5, -HALF_L - gap - depth - 1.5],
     [HALF_W + gap + depth + 1.5, -HALF_L - gap - depth - 1.5],
@@ -193,7 +207,7 @@ function drawStands(
     [-HALF_W - gap - depth - 1.5, HALF_L + gap + depth + 1.5],
   ]);
   ctx.fill();
-  ctx.fillStyle = "#1a2c24";
+  ctx.fillStyle = theme.tier;
   const tiers = [
     [-HALF_W - 0.4, HALF_L + gap, HALF_W + 0.4, HALF_L + gap + depth],
     [-HALF_W - 0.4, -HALF_L - gap - depth, HALF_W + 0.4, -HALF_L - gap],
@@ -228,7 +242,7 @@ function drawStands(
   ctx.globalAlpha = 1;
   const boards: [number, number, string][] = [
     [0, HALF_L + 1.15, "#e7f2ea"],
-    [0, -HALF_L - 1.15, "#8fe388"],
+    [0, -HALF_L - 1.15, theme.accent],
     [HALF_W + 1.15, 0, "#e2b93b"],
     [-HALF_W - 1.15, 0, "#c4534a"],
   ];
@@ -241,12 +255,12 @@ function drawStands(
   }
 }
 
-function drawGrass(ctx: CanvasRenderingContext2D, project: (x: number, y: number, z?: number) => { sx: number; sy: number }) {
+function drawGrass(ctx: CanvasRenderingContext2D, project: (x: number, y: number, z?: number) => { sx: number; sy: number }, theme: PitchTheme) {
   const stripes = 14;
   const span = (HALF_L * 2) / stripes;
   for (let i = 0; i < stripes; i++) {
     const y0 = -HALF_L + i * span;
-    ctx.fillStyle = i % 2 === 0 ? "#187a3a" : "#1f9a48";
+    ctx.fillStyle = i % 2 === 0 ? theme.grass[0] : theme.grass[1];
     poly(ctx, project, [
       [-HALF_W, y0],
       [HALF_W, y0],
@@ -313,8 +327,8 @@ function drawLines(ctx: CanvasRenderingContext2D, project: (x: number, y: number
   }
 }
 
-function drawGoals(ctx: CanvasRenderingContext2D, project: (x: number, y: number, z?: number) => { sx: number; sy: number; s: number }, field: FieldView) {
-  const frame = field.phase === "goal" ? "#8FE388" : "#f4f7f2";
+function drawGoals(ctx: CanvasRenderingContext2D, project: (x: number, y: number, z?: number) => { sx: number; sy: number; s: number }, field: FieldView, theme: PitchTheme) {
+  const frame = field.phase === "goal" ? theme.accent : "#f4f7f2";
   for (const gy of [HALF_L, -HALF_L]) {
     const sign = Math.sign(gy);
     const h = 2.44;
@@ -376,12 +390,13 @@ function drawPlayer(
   p: RT,
   ctrl: boolean,
   kit: string,
+  accent: string,
 ) {
   const foot = project(p.x, p.y, 0);
   const s = Math.max(12, Math.min(28, foot.s * 0.92));
   const nose = project(p.x - Math.sin(p.yaw) * 1.15, p.y + Math.cos(p.yaw) * 1.15, 0);
   if (ctrl) {
-    ctx.strokeStyle = "#8FE388";
+    ctx.strokeStyle = accent;
     ctx.lineWidth = Math.max(2, s * 0.1);
     ctx.beginPath();
     ctx.arc(foot.sx, foot.sy - s * 0.15, Math.max(13, s * 1.15), 0, Math.PI * 2);

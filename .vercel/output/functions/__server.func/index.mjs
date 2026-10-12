@@ -12,7 +12,7 @@ var install_page_default = "<!DOCTYPE html>\n<html lang=\"en\" class=\"device-de
 //#endregion
 //#region \0virtual:grok-og-identity
 var grokOgIdentity = { "site": {
-	"title": "Чувашский мяч 2026",
+	"title": "Родной мяч",
 	"type": "x:game",
 	"card": "custom",
 	"color": "07110C",

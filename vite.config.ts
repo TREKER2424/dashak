@@ -12,6 +12,24 @@ import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
 
+function hmrKeepAlive(): Plugin {
+  return {
+    name: "app-builder:hmr-keepalive",
+    apply: "serve",
+    configureServer(server) {
+      const timer = setInterval(() => {
+        try {
+          server.ws.send({ type: "custom", event: "keepalive", data: { t: Date.now() } });
+        } catch {
+          /* socket not open yet */
+        }
+      }, 5000);
+      timer.unref?.();
+      server.httpServer?.once("close", () => clearInterval(timer));
+    },
+  };
+}
+
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
 function hasGlobbedMigrations(root: string): boolean {
   try {
@@ -150,6 +168,10 @@ export default defineConfig(({ command, isPreview }) => ({
     host: "0.0.0.0",
     port: 8080,
     strictPort: true,
+    // Preview proxy drops an idle HMR socket at ~30s. Vite then reloads the
+    // page and the match (memory-only) dumps back to the league home.
+    // Ping well inside that window so the socket stays up for the whole match.
+    hmr: { timeout: 5000 },
   },
   preview: {
     host: "127.0.0.1",
@@ -161,6 +183,7 @@ export default defineConfig(({ command, isPreview }) => ({
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
     authPopupPlugin(),
+    hmrKeepAlive(),
     // Dev-only /__app-env, read by scripts/check-auth-invariant.mjs.
     appEnvPlugin(),
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.

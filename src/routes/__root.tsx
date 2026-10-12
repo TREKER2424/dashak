@@ -3,7 +3,7 @@ import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "Чувашский мяч 2026";
+const APP_NAME = "Родной мяч";
 
 /** Same public-host gate as the share injector's og:image origin. */
 function shareHost(): string {
@@ -30,11 +30,11 @@ export const Route = createRootRoute({
     const host = shareHost();
     const meta: Array<{ charSet?: string; name?: string; property?: string; content?: string; title?: string }> = [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
+      { name: "viewport", content: "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" },
       { title: APP_NAME },
       {
         name: "description",
-        content: "Чувашская Премьер-Лига 2026. Ночной футбол, быстрые матчи и карьера за клуб.",
+        content: "Родной мяч. Три лиги, ночной футбол, быстрые матчи и карьера за клуб.",
       },
       { name: "theme-color", content: "#07110C" },
     ];

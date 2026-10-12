@@ -1,4 +1,5 @@
 import { audio } from "./audio";
+import { tr } from "./i18n";
 import {
   clubInfo,
   clubShape,
@@ -31,11 +32,11 @@ export function diffFromRatings(mine: number, theirs: number): DiffId {
 }
 
 const DIFF: Record<DiffId, { acc: number; speed: number; save: number; press: number; mate: number; tackle: number; mark: number }> = {
-  novice: { acc: 0.2, speed: 0.6, save: 0.22, press: 0, mate: 0.96, tackle: 0.05, mark: 0.75 },
-  amateur: { acc: 0.4, speed: 0.72, save: 0.4, press: 1, mate: 0.84, tackle: 0.32, mark: 1 },
-  pro: { acc: 0.58, speed: 0.84, save: 0.56, press: 1, mate: 0.72, tackle: 0.55, mark: 1.22 },
-  world: { acc: 0.78, speed: 0.94, save: 0.74, press: 2, mate: 0.58, tackle: 0.8, mark: 1.45 },
-  legend: { acc: 0.98, speed: 1.04, save: 0.9, press: 2, mate: 0.42, tackle: 1.08, mark: 1.7 },
+  novice: { acc: 0.2, speed: 0.62, save: 0.12, press: 0.4, mate: 0.96, tackle: 0.2, mark: 0.75 },
+  amateur: { acc: 0.4, speed: 0.72, save: 0.26, press: 0.85, mate: 0.84, tackle: 0.36, mark: 1 },
+  pro: { acc: 0.72, speed: 0.9, save: 0.78, press: 1.05, mate: 0.56, tackle: 0.94, mark: 1.7 },
+  world: { acc: 0.86, speed: 0.98, save: 0.88, press: 1.28, mate: 0.44, tackle: 1.1, mark: 1.95 },
+  legend: { acc: 0.98, speed: 1.14, save: 0.96, press: 2.75, mate: 0.28, tackle: 1.4, mark: 2.25 },
 };
 
 export type Tactic = "tiki" | "bus" | "press" | "counter" | "wing" | "direct";
@@ -50,9 +51,10 @@ const PLAN_LABEL: Record<Tactic, string> = {
 };
 
 function matchPace(v: number) {
-  if (Math.abs(v - 0.82) < 0.03 || Math.abs(v - 0.68) < 0.03) return 0.68;
-  if (Math.abs(v - 1.18) < 0.03 || Math.abs(v - 1.45) < 0.03) return 1.45;
-  return v > 0.4 && v < 2.2 ? v : 1;
+  if (Math.abs(v - 0.82) < 0.03 || Math.abs(v - 0.68) < 0.03 || Math.abs(v - 0.78) < 0.03) return 0.78;
+  if (Math.abs(v - 0.96) < 0.03) return 0.96;
+  if (Math.abs(v - 1.58) < 0.03 || Math.abs(v - 1.45) < 0.03 || Math.abs(v - 1.18) < 0.03 || Math.abs(v - 1.12) < 0.03 || Math.abs(v - 1) < 0.03) return 1.12;
+  return v > 0.4 && v < 2.2 ? v : 0.96;
 }
 
 function saltOf(a: string, b: string) {
@@ -99,6 +101,7 @@ export type RT = {
   order: boolean;
   yellow: number;
   red: boolean;
+  fouls: number;
   form: number;
   fitness: number;
   pinned: boolean;
@@ -127,7 +130,7 @@ export type Ball = {
   squash: number;
 };
 
-export type Dead = { kind: "throw" | "corner" | "goalkick" | "freekick" | "penalty"; side: 0 | 1; x: number; y: number; wait: number };
+export type Dead = { kind: "throw" | "corner" | "goalkick" | "freekick" | "penalty"; side: 0 | 1; x: number; y: number; wait: number; age?: number };
 
 type Incident = {
   kind: "foul" | "offside";
@@ -139,6 +142,7 @@ type Incident = {
   y: number;
   actor: RT | null;
   victimPlayer: RT | null;
+  expect: "none" | "yellow" | "red";
 };
 
 export type Scorer = { name: string; minute: string; side: 0 | 1; own: boolean; assist: string | null };
@@ -221,6 +225,8 @@ export type Snap = {
   homeSwatch: [string, string];
   awaySwatch: [string, string];
   critic: { mark: string; title: string; text: string };
+  canSwitch: boolean;
+  canSub: boolean;
 };
 
 type Buf = { pass: number; shoot: number; tackle: number; switch: number; quick: number };
@@ -274,6 +280,7 @@ export class MatchSim implements FieldView {
   dead: Dead | null = null;
   now = 0;
   diff: (typeof DIFF)[DiffId];
+  level: DiffId = "novice";
   volume = 0.8;
   canvas: HTMLCanvasElement | null = null;
   ctx: CanvasRenderingContext2D | null = null;
@@ -323,6 +330,11 @@ export class MatchSim implements FieldView {
   private padPass = false;
   private padShoot = false;
   private manualSwitchAt = -10;
+  private relayUid = "";
+  private relayAt = -10;
+  private setPieceId = "";
+  private looseAge = 0;
+  private static active = new Set<MatchSim>();
 
   constructor(opts: {
     homeId: string;
@@ -348,6 +360,7 @@ export class MatchSim implements FieldView {
     this.halfLen = Math.max(30, opts.halfMin * 60);
     this.halfBase = this.halfLen;
     this.diff = DIFF[opts.difficulty];
+    this.level = opts.difficulty;
     this.formation = opts.formation ?? "4-3-3";
     this.speedMul = matchPace(opts.speed ?? 1);
     this.lockControl = Boolean(opts.lockControl);
@@ -378,6 +391,11 @@ export class MatchSim implements FieldView {
     this.startWalk();
     audio.setMatch(true);
     audio.whistle();
+    MatchSim.active.add(this);
+  }
+
+  static haltAll() {
+    for (const sim of [...MatchSim.active]) sim.stop();
   }
 
   private buildSquad(side: 0 | 1, team: TeamDef, formation: string, lockId?: string) {
@@ -415,6 +433,7 @@ export class MatchSim implements FieldView {
       order: false,
       yellow: 0,
       red: false,
+      fouls: 0,
       form: def.form ?? 70,
       fitness: def.fitness ?? 100,
       pinned: false,
@@ -427,16 +446,22 @@ export class MatchSim implements FieldView {
     if (this.raf || typeof requestAnimationFrame === "undefined") return;
     this.bindKeys();
     let last = performance.now();
+    let frameErr = "";
     const loop = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       try {
         this.step(dt);
         this.paint();
+        frameErr = "";
       } catch (err) {
-        this.banner = "Кадр сброшен — игра продолжается";
+        this.banner = tr("Кадр сброшен — игра продолжается", "The frame was reset — play goes on");
         this.bannerT = 1.2;
-        console.error(err);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg !== frameErr) {
+          frameErr = msg;
+          console.error(err);
+        }
       }
       this.raf = requestAnimationFrame(loop);
     };
@@ -448,6 +473,7 @@ export class MatchSim implements FieldView {
     this.raf = 0;
     this.unbindKeys();
     audio.setMatch(false);
+    MatchSim.active.delete(this);
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
@@ -462,11 +488,12 @@ export class MatchSim implements FieldView {
     }
     if (this.paused) return;
     if (this.referee) {
-      if (e.code === "KeyF" || e.code === "Space") this.judge("foul");
-      if (e.code === "KeyG") this.judge("advantage");
-      if (e.code === "KeyO") this.judge("offside");
       if (e.code === "KeyY") this.judge("yellow");
       if (e.code === "KeyR") this.judge("red");
+      if (e.code === "KeyO") this.judge("offside");
+      if (e.code === "KeyU") this.judge("notoffside");
+      if (e.code === "KeyF" || e.code === "KeyG") this.judge("foul");
+      if (e.code === "KeyN") this.judge("clear");
       return;
     }
     if (e.code === "Space" || e.code === "KeyJ") this.arm("pass");
@@ -580,7 +607,7 @@ export class MatchSim implements FieldView {
   }
 
   togglePause() {
-    if (this.phase === "fulltime" || this.phase === "halftime" || this.phase === "goal") return;
+    if (this.phase === "fulltime" || this.phase === "goal") return;
     this.paused = !this.paused;
     this.emit(true);
   }
@@ -591,10 +618,28 @@ export class MatchSim implements FieldView {
     this.clock = 0;
     this.halfLen = this.halfBase;
     this.addedApplied = false;
+    this.paused = false;
     for (const p of this.players) if (p.on) p.stamina = clamp(p.stamina + 22, 0, 100);
     this.kickoff(1);
-    this.banner = "Второй тайм";
+    this.banner = tr("Второй тайм", "Second half");
     this.bannerT = 2;
+    audio.whistle();
+    this.emit(true);
+  }
+
+  /** Whistle exactly on the selected half. Added time does not stretch the match. */
+  private finishHalf() {
+    this.added = 0;
+    this.clock = this.halfLen;
+    if (this.half === 1) {
+      this.phase = "halftime";
+      this.banner = tr("Перерыв", "Half-time");
+      this.bannerT = 3;
+    } else {
+      this.phase = "fulltime";
+      this.banner = tr("Финальный свисток", "Full time");
+      this.bannerT = 4;
+    }
     audio.whistle();
     this.emit(true);
   }
@@ -607,21 +652,19 @@ export class MatchSim implements FieldView {
     audio.suppressed = true;
     try {
       let guard = 0;
-      while (this.phase !== "fulltime" && guard++ < 250000) {
+      const live = () => this.phase as string;
+      while (live() !== "fulltime" && guard++ < 250000) {
         if (this.phase === "halftime") this.continueHalf();
-        if (this.referee && this.incident) {
-          const card = Math.random();
-          this.judge(this.incident.kind === "offside" ? "offside" : card < 0.14 ? "yellow" : card < 0.17 ? "red" : "foul");
-        }
+        if (this.referee && this.incident) this.settleIncident();
         this.step(1 / 60);
       }
     } finally {
       audio.suppressed = false;
       this.simming = false;
       this.paused = false;
-      if (this.phase !== "fulltime") {
+      if ((this.phase as string) !== "fulltime") {
         this.phase = "fulltime";
-        this.banner = "Финальный свисток";
+        this.banner = tr("Финальный свисток", "Full time");
         this.bannerT = 4;
       }
       this.emit(true);
@@ -756,7 +799,7 @@ export class MatchSim implements FieldView {
     this.kitPicked = this.homeKit !== null && this.awayKit !== null;
     this.applyColors();
     const who = side === this.userSide ? "Ваша форма" : "Форма соперника";
-    this.banner = `${who}: ${kit === "primary" ? "цвет клуба" : "инверсия"}`;
+    this.banner = `${who}: ${kit === "primary" ? tr("цвет клуба", "club colours") : tr("инверсия", "inverse")}`;
     this.bannerT = 2.4;
     this.emit(true);
   }
@@ -770,13 +813,13 @@ export class MatchSim implements FieldView {
   beginPlay() {
     if (this.phase !== "intro") return;
     if (this.homeKit === null || this.awayKit === null) {
-      this.banner = "Выберите форму себе и сопернику — матч ещё не начался";
+      this.banner = tr("Выберите форму себе и сопернику — матч ещё не начался", "Pick your kit and the opponent's — the match has not started");
       this.bannerT = 2.6;
       this.emit(true);
       return;
     }
     this.kickoff(0);
-    this.banner = "Развод с центра. Мяч у хозяев";
+    this.banner = tr("Развод с центра. Мяч у хозяев", "Kick-off. The home side has the ball");
     this.bannerT = 2.2;
     this.emit(true);
   }
@@ -801,7 +844,7 @@ export class MatchSim implements FieldView {
     this.official = { x: 0, y: -8 };
     const first = this.sidePlayers(this.userSide).find((p) => p.pinned && p.role !== "GK") ?? this.sidePlayers(this.userSide).find((p) => p.role !== "GK" && p.on);
     this.controlledId = this.referee ? "" : first?.uid ?? "";
-    this.banner = "Выберите свою форму и форму соперника. Пока обе не выбраны, матч не начнётся";
+    this.banner = tr("Выберите свою форму и форму соперника. Пока обе не выбраны, матч не начнётся", "Pick your kit and the opponent's. The match will not start until both are chosen");
     this.bannerT = 6;
   }
 
@@ -817,14 +860,15 @@ export class MatchSim implements FieldView {
   }
 
   kickoff(side: 0 | 1) {
+    const takers = this.sidePlayers(side).filter((p) => p.role === "CM" || p.role === "ST" || p.role === "CAM" || p.role === "LW" || p.role === "RW");
+    let taker = takers.sort((a, b) => b.eff - a.eff)[0] ?? this.sidePlayers(side).find((p) => p.role !== "GK") ?? this.sidePlayers(side)[0];
+    if (!taker) return;
     this.phase = "play";
     this.dead = null;
     this.kickSide = side;
     this.placeTeam(0);
     this.placeTeam(1);
     const pinned = this.sidePlayers(this.userSide).find((p) => p.pinned && p.role !== "GK");
-    const takers = this.sidePlayers(side).filter((p) => p.role === "CM" || p.role === "ST" || p.role === "CAM" || p.role === "LW" || p.role === "RW");
-    let taker = takers.sort((a, b) => b.eff - a.eff)[0] ?? this.sidePlayers(side).find((p) => p.role !== "GK") ?? this.sidePlayers(side)[0]!;
     if (pinned && side === this.userSide) taker = pinned;
     const atk = this.attack(side);
     taker.x = 0;
@@ -842,31 +886,36 @@ export class MatchSim implements FieldView {
     this.ball.kickAt = this.now;
     this.ball.fromThrow = false;
     this.ball.offside.clear();
-    this.controlledId = pinned?.uid ?? (side === this.userSide ? taker.uid : this.nearestOutfield(this.userSide, 0, 0).uid);
+    const cover = side === this.userSide ? taker : (this.nearestOutfield(this.userSide, 0, 0) ?? taker);
+    this.controlledId = pinned?.uid ?? cover.uid;
     if (this.lockControl && pinned) this.controlledId = pinned.uid;
     if (this.referee) this.controlledId = "";
-    if (this.ctrl()?.role === "GK") this.controlledId = this.nearestOutfield(this.userSide, 0, 0).uid;
+    if (this.ctrl()?.role === "GK") {
+      const out = this.nearestOutfield(this.userSide, 0, 0);
+      if (out && out.role !== "GK") this.controlledId = out.uid;
+    }
     this.stick();
   }
 
   private nearestMate(side: 0 | 1, x: number, y: number) {
-    return this.sidePlayers(side).slice().sort((a, b) => hypot(a.x - x, a.y - y) - hypot(b.x - x, b.y - y))[0]!;
+    return this.sidePlayers(side).slice().sort((a, b) => hypot(a.x - x, a.y - y) - hypot(b.x - x, b.y - y))[0] ?? null;
   }
 
   private nearestOutfield(side: 0 | 1, x: number, y: number) {
     const list = this.sidePlayers(side).filter((p) => p.on && !p.red && p.role !== "GK");
-    return list.sort((a, b) => hypot(a.x - x, a.y - y) - hypot(b.x - x, b.y - y))[0] ?? this.nearestMate(side, x, y);
+    return list.sort((a, b) => hypot(a.x - x, a.y - y) - hypot(b.x - x, b.y - y))[0] ?? this.nearestMate(side, x, y) ?? null;
   }
 
   substitute(outUid: string, inUid: string): string | null {
     const out = this.players.find((p) => p.uid === outUid);
     const inn = this.players.find((p) => p.uid === inUid);
-    if (!out || !inn || out.side !== this.userSide || inn.side !== this.userSide) return "Нельзя";
-    if (!out.on || inn.on) return "Нельзя";
-    if (this.subsUsed >= 5) return "Лимит замен";
+    if (!out || !inn || out.side !== this.userSide || inn.side !== this.userSide) return tr("Нельзя", "Not allowed");
+    if (!this.teamHasBall(this.userSide)) return tr("Замена только когда мяч у вашей команды", "Subs only while your team has the ball");
+    if (!out.on || inn.on) return tr("Нельзя", "Not allowed");
+    if (this.subsUsed >= 5) return tr("Лимит замен", "Substitution limit");
     if (out.role === "GK" || inn.role === "GK") {
-      if (out.role !== "GK" || inn.role !== "GK") return "Вратарь только на вратаря";
-    } else if (!this.roleOk(out.role, inn.role)) return "Позиция не совпадает";
+      if (out.role !== "GK" || inn.role !== "GK") return tr("Вратарь только на вратаря", "A goalkeeper only replaces a goalkeeper");
+    } else if (!this.roleOk(out.role, inn.role)) return tr("Позиция не совпадает", "Position does not fit");
     inn.on = true;
     inn.slot = out.slot;
     inn.x = out.x;
@@ -881,7 +930,7 @@ export class MatchSim implements FieldView {
     this.subsUsed++;
     if (this.controlledId === out.uid) this.controlledId = inn.uid;
     this.applyFormation(this.userSide, this.formation, false);
-    this.banner = `${inn.name} вместо ${out.name}`;
+    this.banner = tr(`${inn.name} вместо ${out.name}`, `${inn.name} on for ${out.name}`);
     this.bannerT = 2.4;
     this.emit(true);
     return null;
@@ -928,7 +977,9 @@ export class MatchSim implements FieldView {
     }
     this.ball.squash = Math.max(0, this.ball.squash - dt * 3);
     if (this.cam.shake > 0) this.cam.shake = Math.max(0, this.cam.shake - dt * 2.4);
-    try { if (!this.simming) audio.update(dt, this.volume, this.paused); } catch { /* звук не должен останавливать кадр */ }
+    try {
+      if (!this.simming) audio.update(dt, this.volume, this.paused, Math.min(1, Math.abs(this.ball.y) / HALF_L));
+    } catch { /* звук не должен останавливать кадр */ }
 
     if (this.paused) {
       this.emit(false);
@@ -942,6 +993,18 @@ export class MatchSim implements FieldView {
       this.emit(false);
       return;
     }
+    if (this.phase === "halftime" || this.phase === "fulltime") {
+      this.emit(false);
+      return;
+    }
+    if (this.phase === "play" || this.phase === "goal") {
+      this.clock += dt;
+      if (this.phase === "play" && this.ball.lastSide != null) this.possTime[this.ball.lastSide] += dt;
+      if (this.clock >= this.halfLen) {
+        this.finishHalf();
+        return;
+      }
+    }
     if (this.phase === "goal") {
       this.goalT -= dt;
       this.burstStep(dt);
@@ -949,49 +1012,16 @@ export class MatchSim implements FieldView {
       this.emit(false);
       return;
     }
-    if (this.phase === "halftime" || this.phase === "fulltime") {
-      this.emit(false);
-      return;
-    }
     if (this.referee && this.incident) {
       this.incidentAge += dt;
-      if (this.incidentAge > 4.5) {
+      if (this.incidentAge > 1.25) {
         this.incidentAge = 0;
-        this.judge("advantage");
+        this.settleIncident();
       }
       this.emit(false);
       return;
     }
     this.incidentAge = 0;
-
-    this.clock += dt;
-    if (this.ball.lastSide != null) this.possTime[this.ball.lastSide] += dt;
-    if (!this.dead && this.clock >= this.halfLen) {
-      if (this.half === 2 && !this.addedApplied) {
-        this.addedApplied = true;
-        this.added = Math.floor(Math.random() * 6);
-        if (this.added > 0) {
-          this.halfLen += this.halfBase * (this.added / 45);
-          this.banner = `Судья добавил ${this.added} мин`;
-          this.bannerT = 2.4;
-          this.emit(true);
-          return;
-        }
-      }
-      if (this.half === 1) {
-        this.phase = "halftime";
-        audio.whistle();
-        this.banner = "Перерыв";
-        this.bannerT = 3;
-      } else {
-        this.phase = "fulltime";
-        audio.whistle();
-        this.banner = "Финальный свисток";
-        this.bannerT = 4;
-      }
-      this.emit(true);
-      return;
-    }
 
     this.updateHumans(dt);
     this.updateAI(dt);
@@ -1043,11 +1073,12 @@ export class MatchSim implements FieldView {
     };
     if (edge(9)) this.togglePause();
     if (this.referee) {
-      if (edge(0)) this.judge("foul");
-      if (edge(1)) this.judge("advantage");
+      if (edge(0)) this.judge("yellow");
+      if (edge(1)) this.judge("foul");
       if (edge(2)) this.judge("offside");
-      if (edge(3)) this.judge("yellow");
-      if (edge(5)) this.judge("red");
+      if (edge(3)) this.judge("red");
+      if (edge(5)) this.judge("clear");
+      if (edge(6)) this.judge("notoffside");
       return;
     }
     const passNow = down(0);
@@ -1086,7 +1117,8 @@ export class MatchSim implements FieldView {
     if (this.lockControl) {
       const pinned = this.players.find((q) => q.pinned && q.role !== "GK");
       if (!pinned) {
-        if (this.ctrl()?.role === "GK") this.controlledId = this.nearestOutfield(this.userSide, this.ball.x, this.ball.y).uid;
+        const out = this.nearestOutfield(this.userSide, this.ball.x, this.ball.y);
+        if (this.ctrl()?.role === "GK" && out) this.controlledId = out.uid;
       } else {
         this.controlledId = pinned.uid;
         if (!pinned.on || pinned.red) return;
@@ -1096,68 +1128,109 @@ export class MatchSim implements FieldView {
     if (!p || !p.on || p.red || p.role === "GK") {
       if (this.lockControl && this.players.some((q) => q.pinned && q.role !== "GK")) return;
       const mate = this.nearestOutfield(this.userSide, this.ball.x, this.ball.y);
-      this.controlledId = mate.uid;
+      if (mate) this.controlledId = mate.uid;
       return;
     }
+    const ownerNow = this.players.find((q) => q.uid === this.ball.owner) ?? null;
+    this.autoDefend(ownerNow);
+    const liveP = this.ctrl();
+    if (!liveP || !liveP.on || liveP.red || liveP.role === "GK") return;
     const { mx, my, mag } = this.moveAxes();
-    const live = this.live(p);
-    const sprint = (this.sprintHeld || this.padSprint || this.keys.has("ShiftLeft") || this.keys.has("ShiftRight")) && p.stamina > 8 && mag > 0.15;
-    const fit = 0.78 + 0.22 * (p.fitness / 100);
-    const tempo = this.speedMul < 0.85 ? 0.72 : this.speedMul > 1.15 ? 1.22 : 1;
-    const max = (4.5 + (live.speed / 100) * 5.1) * tempo * (sprint ? 1.28 : 1) * (0.62 + 0.38 * (p.stamina / 100)) * (this.ball.owner === p.uid ? 0.92 : 1) * fit;
+    const live = this.live(liveP);
+    const sprint = (this.sprintHeld || this.padSprint || this.keys.has("ShiftLeft") || this.keys.has("ShiftRight")) && liveP.stamina > 8 && mag > 0.15;
+    const fit = 0.78 + 0.22 * (liveP.fitness / 100);
+    const tempo = this.speedMul < 0.9 ? 0.82 : this.speedMul < 1.05 ? 0.92 : this.speedMul > 1.3 ? 1.46 : 1.18;
+    const max = (4.5 + (live.speed / 100) * 5.1) * tempo * (sprint ? 1.28 : 1) * (0.62 + 0.38 * (liveP.stamina / 100)) * (this.ball.owner === liveP.uid ? 0.92 : 1) * fit;
     const tvx = mx * max;
     const tvy = my * max;
     const k = Math.min(1, dt * 12);
-    p.vx += (tvx - p.vx) * k;
-    p.vy += (tvy - p.vy) * k;
+    liveP.vx += (tvx - liveP.vx) * k;
+    liveP.vy += (tvy - liveP.vy) * k;
     if (mag > 0.18) {
       const target = Math.atan2(-mx, my);
-      const d = Math.atan2(Math.sin(target - p.yaw), Math.cos(target - p.yaw));
-      p.yaw += d * Math.min(1, dt * 14);
+      const d = Math.atan2(Math.sin(target - liveP.yaw), Math.cos(target - liveP.yaw));
+      liveP.yaw += d * Math.min(1, dt * 14);
     }
     if (mag > 0.12) this.idle = 0;
     else this.idle += dt;
     if (this.idle > 2.2 && this.bannerT <= 0) {
-      this.banner = "WASD или джойстик слева — кольцо на вашем игроке";
+      this.banner = tr("WASD или джойстик слева — кольцо на вашем игроке", "WASD or the stick on the left — the ring is on your player");
       this.bannerT = 2.4;
       this.idle = 0;
     }
-    if (sprint) p.stamina = Math.max(0, p.stamina - 15 * dt);
+    if (sprint) liveP.stamina = Math.max(0, liveP.stamina - 15 * dt);
     if (this.buf.switch > 0) {
       this.buf.switch = 0;
       this.switchPlayer();
     }
     if (this.buf.quick > 0 && this.dead) {
       this.buf.quick = 0;
-      const rec = this.recommend();
-      if (rec) this.substitute(rec.outUid, rec.inUid);
+      if (!this.teamHasBall(this.userSide)) {
+        this.banner = tr("Замена только со своим мячом", "Subs only while you have the ball");
+        this.bannerT = 1.3;
+      } else {
+        const rec = this.recommend();
+        if (rec) this.substitute(rec.outUid, rec.inUid);
+      }
     }
-    if (this.buf.pass > 0 && this.ball.owner === p.uid) {
+    const actor = this.ctrl() ?? liveP;
+    if (this.buf.pass > 0 && this.ball.owner === actor.uid) {
       this.buf.pass = 0;
-      this.pass(p);
+      this.pass(actor);
     }
-    if (this.buf.shoot > 0 && this.ball.owner === p.uid) {
+    if (this.buf.shoot > 0 && this.ball.owner === actor.uid) {
       this.buf.shoot = 0;
-      this.shoot(p);
+      this.shoot(actor);
     }
     if (this.buf.tackle > 0) {
       this.buf.tackle = 0;
-      this.userTackle(p);
+      this.userTackle(actor);
     }
+    if (this.dead && actor.uid === this.setPieceId && dist(actor, this.dead) < 1.75) this.ball.owner = actor.uid;
     const owner = this.players.find((q) => q.uid === this.ball.owner);
     const canAuto = this.now - this.manualSwitchAt > 0.45;
-    if (canAuto && owner && owner.side === this.userSide && owner.on && !owner.red && owner.uid !== p.uid && (owner.pinned || (!this.lockControl && owner.role !== "GK" && this.now - this.ball.kickAt > 0.16))) {
+    if (canAuto && owner && owner.side === this.userSide && owner.on && !owner.red && owner.uid !== actor.uid && (owner.pinned || (!this.lockControl && owner.role !== "GK" && this.now - this.ball.kickAt > 0.16))) {
       this.controlledId = owner.uid;
     }
   }
 
+  /** While defending, stay on the chosen nearest player unless someone else is clearly closer. */
+  private autoDefend(owner: RT | null) {
+    if (this.lockControl || this.referee || this.simming) return;
+    if (owner?.side === this.userSide || this.teamHasBall(this.userSide)) return;
+    if (this.now - this.manualSwitchAt < 2.6) return;
+    const nearest = this.nearestOutfield(this.userSide, this.ball.x, this.ball.y);
+    if (!nearest) return;
+    const current = this.ctrl();
+    if (!current || !current.on || current.red || current.role === "GK" || current.side !== this.userSide) {
+      this.controlledId = nearest.uid;
+      return;
+    }
+    if (nearest.uid === current.uid) return;
+    if (dist(nearest, this.ball) + 2.4 < dist(current, this.ball)) this.controlledId = nearest.uid;
+  }
+
+  /** Switch is for defending: available only after your side loses the ball. */
   private switchPlayer() {
     if (this.lockControl || this.referee) return;
+    if (this.teamHasBall(this.userSide)) {
+      this.banner = tr("Смена игрока только без мяча", "Switch player only after you lose the ball");
+      this.bannerT = 1.2;
+      return;
+    }
     this.manualSwitchAt = this.now;
     const mates = this.sidePlayers(this.userSide).filter((m) => m.on && !m.red && m.role !== "GK").slice().sort((a, b) => dist(a, this.ball) - dist(b, this.ball));
+    if (!mates.length) return;
     const idx = Math.max(0, mates.findIndex((m) => m.uid === this.controlledId));
     const next = mates[(idx + 1) % mates.length];
     if (next) this.controlledId = next.uid;
+  }
+
+  private teamHasBall(side: 0 | 1) {
+    const owner = this.players.find((q) => q.uid === this.ball.owner);
+    if (owner) return owner.side === side;
+    if (this.dead) return this.dead.side === side;
+    return false;
   }
 
   private forward(p: RT) {
@@ -1213,7 +1286,7 @@ export class MatchSim implements FieldView {
       const gap = hypot(tx - p.x, ty - p.y);
       const pace = this.passPace(gap, powerMul);
       this.kick(p, tx - p.x + jitter() * 4, ty - p.y + jitter() * 4, pace, 0.12 + powerMul * 0.22, false);
-      this.banner = `Пас: ${best.name}`;
+      this.banner = tr(`Пас: ${best.name}`, `Pass: ${best.name}`);
       this.bannerT = 1.3;
     } else {
       const dirx = aim ? aim.x - p.x : facing.x;
@@ -1231,25 +1304,47 @@ export class MatchSim implements FieldView {
   private shoot(p: RT) {
     this.shotN[p.side] += 1;
     const atk = this.attack(p.side);
-    const gy = atk * HALF_L;
     const live = this.live(p);
     const user = p.uid === this.controlledId && !this.simming;
+    const facing = this.forward(p);
+    const ownGoalY = -atk * HALF_L;
+    const faceOwn = facing.y * atk < -0.22;
+    const aimOwn = Boolean(this.aim && Math.abs(this.aim.y - ownGoalY) + 4 < Math.abs(this.aim.y - atk * HALF_L));
+    const ownNet = user && (faceOwn || aimOwn);
+    const gy = (ownNet ? -atk : atk) * HALF_L;
     const rival = this.referee || p.side !== this.userSide;
     const powerMul = user ? this.kickPower : rival ? 0.58 + this.diff.acc * 0.42 : 0.72;
     const aimX = this.aim ? clamp(this.aim.x, -3.3, 3.3) : clamp(-Math.sin(p.yaw) * 2.2, -3.1, 3.1);
     let acc = clamp(live.accuracy / 100 - Math.max(0, powerMul - 0.82) * 0.22, 0.34, 0.97);
-    if (!user && rival) acc = clamp(0.28 + this.diff.acc * 0.5 + acc * 0.22, 0.32, 0.9);
+    if (!user && rival) acc = clamp(0.34 + this.diff.acc * 0.58 + acc * 0.16, 0.38, this.diff.acc >= 0.9 ? 0.96 : 0.9);
     else if (!user) acc = clamp(0.42 + acc * 0.4, 0.4, 0.88);
+    const punish = !user && !this.referee && p.side !== this.userSide && this.level !== "novice" && !ownNet;
+    if (punish) acc = clamp(Math.max(acc, 0.84), 0.84, 0.93);
     const dx = aimX - p.x;
     const dy = gy - p.y;
-    const ang = Math.atan2(dx, dy) + (Math.random() - 0.5) * (1 - acc) * 0.85;
+    const ang = Math.atan2(dx, dy) + (Math.random() - 0.5) * (1 - acc) * (ownNet ? 0.28 : 0.85);
     const power = clamp((16 + (live.hardness / 100) * 12) * (0.58 + powerMul * 0.55), 12, 34);
     const zLift = dist(p, { x: 0, y: gy });
-    const paced = !user && zLift > 18 ? clamp(Math.max(power, 12 + zLift * 0.9), 12, 38) : power;
-    let z = zLift > 22 ? 2.2 + powerMul * 2.4 : 0.7 + powerMul * 0.8;
-    if (!user && zLift > 12 && zLift < 36) z = clamp(5.2 + (zLift - 16) * 0.06, 4.8, 6.6);
+    const reach = clamp(14 + zLift * 0.72, 16, 46);
+    let paced = ownNet ? reach : !user && zLift > 18 ? clamp(Math.max(power, 12 + zLift * 0.9), 12, 38) : power;
+    let z = ownNet ? 0.28 + Math.min(0.35, zLift * 0.004) : zLift > 22 ? 2.2 + powerMul * 2.4 : 0.7 + powerMul * 0.8;
+    if (!ownNet && !user && zLift > 12 && zLift < 36 && !punish) z = clamp(5.2 + (zLift - 16) * 0.06, 4.8, 6.6);
+    if (punish) {
+      const tempo = this.ballTempo();
+      const scale = 0.85 + tempo * 0.15;
+      paced = clamp(Math.max(paced, 15 + zLift * 1.12), 18, 42);
+      const pace = Math.max(16, paced * tempo);
+      const drag = this.weather === "clear" ? 0.8 : 1.25;
+      let flight = Math.max(0.32, zLift / pace);
+      for (let i = 0; i < 4; i++) {
+        const cover = (pace * (1 - Math.exp(-drag * flight))) / drag;
+        flight = Math.max(0.28, flight * (zLift / Math.max(4, cover)));
+      }
+      const vz = (1.5 - 0.2 + 6.5 * flight * flight) / flight;
+      z = clamp(vz / scale, 2.6, 9);
+    }
     this.kick(p, Math.sin(ang), Math.cos(ang), paced, z, true);
-    this.banner = `Удар! ${p.name}`;
+    this.banner = ownNet ? tr(`Удар в свои! ${p.name}`, `At his own net! ${p.name}`) : tr(`Удар! ${p.name}`, `Shot! ${p.name}`);
     this.bannerT = 1.4;
     this.aim = null;
   }
@@ -1268,12 +1363,16 @@ export class MatchSim implements FieldView {
       this.ball.assistSide = p.side;
       this.markOffside(p);
     } else this.ball.offside.clear();
-    this.ball.vx = (dx / len) * power;
-    this.ball.vy = (dy / len) * power;
-    this.ball.vz = z;
+    this.ball.vx = (dx / len) * power * this.ballTempo();
+    this.ball.vy = (dy / len) * power * this.ballTempo();
+    this.ball.vz = z * (0.85 + this.ballTempo() * 0.15);
     this.ball.z = 0.2;
     this.dead = null;
-    if (!shot) this.passN[p.side] += 1;
+    if (!shot) {
+      this.passN[p.side] += 1;
+      this.relayUid = p.uid;
+      this.relayAt = this.now;
+    }
     audio.kick();
   }
 
@@ -1299,18 +1398,55 @@ export class MatchSim implements FieldView {
 
   private userTackle(p: RT) {
     const foe = this.players.find((q) => q.side !== p.side && q.on && this.ball.owner === q.uid);
-    if (!foe || foe.role === "GK" || dist(p, foe) > 1.8) return;
-    p.cd = 0.7;
+    if (!foe || foe.role === "GK" || dist(p, foe) > 2.15) return;
+    p.cd = 0.62;
+    const behind = this.fromBehind(p, foe);
+    const sprint = this.sprintHeld || this.padSprint || this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
     const mine = this.live(p);
     const theirs = this.live(foe);
-    const won = dist(p, this.ball) < 1.5 && Math.random() < this.userTackleChance(mine.hardness, theirs.hardness);
-    if (won) {
+    const gotBall = dist(p, this.ball) < 1.28;
+    const clean = gotBall && !behind && Math.random() < this.userTackleChance(mine.hardness, theirs.hardness);
+    if (clean) {
       this.popBall(foe, p);
-      this.banner = `Отбор: ${p.name}`;
+      this.banner = tr(`Отбор: ${p.name}`, `Tackle: ${p.name}`);
       this.bannerT = 1.2;
-    } else if (dist(p, this.ball) > 1.05) {
-      this.foul(p, foe);
+      return;
     }
+    if (dist(p, foe) > 1.85 && !gotBall) return;
+    this.foul(p, foe, this.booking(p, foe, behind, sprint));
+  }
+
+  private fromBehind(by: RT, victim: RT) {
+    const face = this.forward(victim);
+    const dx = by.x - victim.x;
+    const dy = by.y - victim.y;
+    const d = hypot(dx, dy) || 1;
+    return (dx / d) * face.x + (dy / d) * face.y < -0.2;
+  }
+
+  /** Last defender fouling a player through on goal is a red, not an injury. */
+  private lastMan(by: RT, victim: RT) {
+    if (by.side === victim.side || by.role === "GK") return false;
+    const atk = this.attack(victim.side);
+    if (atk * victim.y < 8) return false;
+    const goalY = -this.attack(by.side) * HALF_L;
+    const depth = Math.abs(by.y - goalY);
+    for (const q of this.sidePlayers(by.side)) {
+      if (q.uid === by.uid || q.role === "GK" || !q.on || q.red) continue;
+      if (Math.abs(q.y - goalY) < depth - 0.8) return false;
+    }
+    return dist(by, victim) < 3.4;
+  }
+
+  private booking(by: RT, victim: RT, behind: boolean, sprint: boolean): "none" | "yellow" | "red" {
+    if (this.lastMan(by, victim)) return "red";
+    if (behind && by.hardness >= 84) return "red";
+    if (behind) return "yellow";
+    if (sprint && (by.hardness >= 68 || Math.random() < 0.62)) return "yellow";
+    if (by.fouls >= 1 && Math.random() < 0.48) return "yellow";
+    if (by.hardness >= 74 && Math.random() < 0.36) return "yellow";
+    if (Math.random() < (this.referee ? 0.28 : 0.16)) return "yellow";
+    return "none";
   }
 
   private popBall(from: RT, to: RT | null) {
@@ -1336,98 +1472,178 @@ export class MatchSim implements FieldView {
     this.ball.lastSide = from.side;
   }
 
-  judge(kind: "foul" | "advantage" | "offside" | "yellow" | "red") {
+  judge(kind: "foul" | "offside" | "notoffside" | "yellow" | "red" | "clear") {
     if (!this.referee || this.paused || this.phase !== "play") return;
     const inc = this.incident;
     if (!inc) {
-      if (kind === "advantage") {
-        this.banner = "Игра продолжается";
-      } else {
+      if (kind === "notoffside") this.banner = tr("Офсайда нет", "No offside");
+      else if (kind === "clear") this.banner = tr("Игра продолжается", "Play on");
+      else {
         this.refWrong++;
-        this.banner = "Лишний свисток";
+        this.banner = tr("Лишний свисток", "Nothing to call");
         audio.whistle();
       }
       this.bannerT = 1.4;
       this.emit(true);
       return;
     }
-    const card = kind === "yellow" || kind === "red" ? kind : "none";
-    if (inc.kind === "foul" && (kind === "foul" || kind === "yellow" || kind === "red") && inc.actor && inc.victimPlayer) {
-      this.refCorrect++;
+    const actor = inc.actor;
+    const victim = inc.victimPlayer;
+    const drop = () => {
       this.incident = null;
-      this.applyFoul(inc.actor, inc.victimPlayer, card);
-      return;
-    }
-    if (inc.kind === "offside" && kind === "offside" && inc.actor) {
-      this.refCorrect++;
-      this.incident = null;
-      this.applyOffside(inc.actor);
-      return;
-    }
-    if (kind === "advantage") {
-      this.refWrong++;
-      this.banner = inc.kind === "offside" ? "Офсайд пропущен" : "Фол пропущен";
-      this.bannerT = 1.5;
-      if (inc.kind === "offside" && inc.actor) {
-        this.ball.offside.delete(inc.actor.uid);
-        this.ball.owner = inc.actor.uid;
-        this.ball.lastUid = inc.actor.uid;
-        this.ball.lastSide = inc.actor.side;
+    };
+    if (inc.kind === "offside") {
+      if (kind === "offside" && actor) {
+        this.refCorrect++;
+        drop();
+        this.applyOffside(actor);
+        return;
       }
-      this.incident = null;
+      if (kind === "notoffside") {
+        this.refWrong++;
+        this.banner = tr("Офсайд пропущен", "Offside missed");
+      } else {
+        this.refWrong++;
+        this.banner = tr("Это был офсайд", "That was offside");
+      }
+      this.bannerT = 1.5;
+      if (actor) {
+        this.ball.offside.delete(actor.uid);
+        this.ball.owner = actor.uid;
+        this.ball.lastUid = actor.uid;
+        this.ball.lastSide = actor.side;
+      }
+      drop();
       this.emit(true);
       return;
     }
-    this.refWrong++;
-    this.banner = "Неверное решение";
-    this.bannerT = 1.5;
-    if (inc.kind === "offside" && inc.actor) {
-      this.ball.offside.delete(inc.actor.uid);
-      this.ball.owner = inc.actor.uid;
+    if (!actor || !victim) {
+      drop();
+      return;
     }
-    this.incident = null;
+    const expect = inc.expect;
+    const booked = actor.yellow > 0;
+    const laws = (card: "none" | "yellow" | "red") => {
+      drop();
+      this.applyFoul(actor, victim, card, inc.inBox ? "penalty" : "freekick");
+    };
+    if (kind === "offside") {
+      this.refWrong++;
+      this.banner = tr("Это был фол, не офсайд", "That was a foul, not offside");
+      this.bannerT = 1.5;
+      laws("none");
+      return;
+    }
+    if (kind === "notoffside") {
+      this.refCorrect++;
+      this.banner = inc.inBox ? tr("Не офсайд. Пенальти", "Not offside. Penalty") : tr("Не офсайд. Штрафной", "Not offside. Free kick");
+      laws("none");
+      this.banner = inc.inBox ? tr("Не офсайд. Пенальти", "Not offside. Penalty") : tr("Не офсайд. Штрафной", "Not offside. Free kick");
+      this.bannerT = 1.6;
+      this.emit(true);
+      return;
+    }
+    if (kind === "foul") {
+      const plain = expect === "none";
+      if (plain) this.refCorrect++;
+      else this.refWrong++;
+      laws("none");
+      this.banner = plain
+        ? inc.inBox
+          ? tr("Фол. Пенальти", "Foul. Penalty")
+          : tr(`Фол. ${actor.name}`, `Foul. ${actor.name}`)
+        : tr("Фол есть, карточка мимо", "Foul given, the card was missed");
+      this.bannerT = 1.6;
+      this.emit(true);
+      return;
+    }
+    if (kind === "clear") {
+      this.refWrong++;
+      this.banner = tr("Фол пропущен", "Foul missed");
+      this.bannerT = 1.5;
+      drop();
+      this.emit(true);
+      return;
+    }
+    const card = kind === "red" ? "red" : "yellow";
+    const rightYellow = kind === "yellow" && expect === "yellow";
+    const rightRed = kind === "red" && expect === "red";
+    if (rightYellow || rightRed) this.refCorrect++;
+    else this.refWrong++;
+    laws(card);
+    const sent = booked && kind === "yellow";
+    this.banner = rightYellow || rightRed ? (sent ? tr("Вторая жёлтая", "Second yellow") : tr("Карточка верная", "Correct card")) : tr("Карточка не по эпизоду", "Card did not fit the incident");
+    this.bannerT = 1.6;
     this.emit(true);
   }
 
-  private foul(by: RT, victim: RT) {
+  /** Free kick or penalty follows the spot. The referee does not pick the restart. */
+  private settleIncident() {
+    const inc = this.incident;
+    if (!inc) return;
+    this.incident = null;
+    if (inc.kind === "offside" && inc.actor) {
+      this.applyOffside(inc.actor);
+      return;
+    }
+    if (inc.actor && inc.victimPlayer) {
+      this.applyFoul(inc.actor, inc.victimPlayer, "none", inc.inBox ? "penalty" : "freekick");
+      this.banner = inc.inBox ? tr("Пенальти", "Penalty") : tr("Штрафной", "Free kick");
+      this.bannerT = 1.4;
+      this.emit(true);
+    }
+  }
+
+  private foul(by: RT, victim: RT, card: "none" | "yellow" | "red" = "none") {
     const atk = this.attack(victim.side);
     const inBox = Math.abs(by.x) < 20 && atk * by.y > atk * (HALF_L - 16.5) && atk * by.y < atk * HALF_L;
     if (this.referee) {
       if (this.incident) return;
-      this.incident = { kind: "foul", by: by.name, victim: victim.name, inBox, side: victim.side, x: by.x, y: by.y, actor: by, victimPlayer: victim };
-      this.banner = inBox ? "Момент в штрафной" : "Стык. Ваше решение";
+      this.incident = { kind: "foul", by: by.name, victim: victim.name, inBox, side: victim.side, x: by.x, y: by.y, actor: by, victimPlayer: victim, expect: card };
+      this.banner = inBox ? tr("Момент в штрафной", "Incident in the box") : tr("Стык. Ваше решение", "A coming-together. Your call");
       this.bannerT = 2;
       return;
     }
-    this.applyFoul(by, victim, "none");
+    this.applyFoul(by, victim, card);
   }
 
-  private applyFoul(by: RT, victim: RT, card: "none" | "yellow" | "red") {
+  private applyFoul(by: RT, victim: RT, card: "none" | "yellow" | "red", spot?: "penalty" | "freekick") {
     const atk = this.attack(victim.side);
     const inBox = Math.abs(by.x) < 20 && atk * by.y > atk * (HALF_L - 16.5) && atk * by.y < atk * HALF_L;
+    const pen = spot ? spot === "penalty" : inBox;
     this.dead = {
-      kind: inBox ? "penalty" : "freekick",
+      kind: pen ? "penalty" : "freekick",
       side: victim.side,
-      x: inBox ? 0 : clamp(by.x, -HALF_W + 1, HALF_W - 1),
-      y: inBox ? atk * 41.5 : clamp(by.y, -HALF_L + 2, HALF_L - 2),
-      wait: 0.45,
+      x: pen ? 0 : clamp(by.x, -HALF_W + 1, HALF_W - 1),
+      y: pen ? atk * 41.5 : clamp(by.y, -HALF_L + 2, HALF_L - 2),
+      wait: 0.55,
+      age: 0,
     };
     this.giveDead(victim.side);
     this.foulN[by.side] += 1;
-    if (inBox) this.penN[victim.side] += 1;
-    const rough = by.hardness >= 74 || this.style[by.side] === "rough";
-    const directRed = card === "red" || (!this.referee && card === "none" && rough && Math.random() < 0.035);
-    const book = directRed || card === "yellow" || (!this.referee && card === "none" && Math.random() < (rough ? 0.36 : 0.18));
-    if (book) {
-      by.yellow += directRed ? 2 : 1;
-      if (by.yellow >= 2) {
+    by.fouls += 1;
+    if (pen) this.penN[victim.side] += 1;
+    const directRed = card === "red";
+    if (directRed || card === "yellow") {
+      if (directRed) {
         by.red = true;
         by.on = false;
         by.vx = 0;
         by.vy = 0;
-        this.banner = `Красная! ${by.name} удалён`;
-      } else this.banner = `Фол. Жёлтая ${by.name}`;
-    } else this.banner = inBox ? "Пенальти" : "Штрафной";
+        this.banner = tr(`Красная карточка. ${by.name}`, `Red card. ${by.name}`);
+        if (this.ball.owner === by.uid) this.ball.owner = null;
+      } else {
+        by.yellow += 1;
+        if (by.yellow >= 2) {
+          by.red = true;
+          by.on = false;
+          by.vx = 0;
+          by.vy = 0;
+          this.banner = tr(`Вторая жёлтая. ${by.name} удалён`, `Second yellow. ${by.name} is sent off`);
+          if (this.ball.owner === by.uid) this.ball.owner = null;
+        } else this.banner = tr(`Жёлтая карточка. ${by.name}`, `Yellow card. ${by.name}`);
+      }
+    } else this.banner = this.banner || (pen ? tr("Пенальти", "Penalty") : tr(`Фол. ${by.name}`, `Foul. ${by.name}`));
     this.bannerT = 2;
     audio.whistle();
     this.emit(true);
@@ -1435,12 +1651,12 @@ export class MatchSim implements FieldView {
 
   private giveDead(side: 0 | 1) {
     if (!this.dead) return;
+    this.dead.age = 0;
     const taker = this.dead.kind === "goalkick"
       ? this.sidePlayers(side).find((p) => p.role === "GK" && p.on && !p.red) ?? this.nearestMate(side, this.dead.x, this.dead.y)
       : this.nearestOutfield(side, this.dead.x, this.dead.y);
-    taker.x = this.dead.x;
-    taker.y = this.dead.y - this.attack(side) * 0.7;
-    this.ball.owner = taker.uid;
+    this.setPieceId = taker?.uid ?? "";
+    this.ball.owner = null;
     this.ball.x = this.dead.x;
     this.ball.y = this.dead.y;
     this.ball.z = 0;
@@ -1450,7 +1666,8 @@ export class MatchSim implements FieldView {
     this.ball.fromThrow = this.dead.kind === "throw";
     this.ball.offside.clear();
     this.ball.lastSide = side;
-    if (side === this.userSide && !this.lockControl && !this.referee && taker.role !== "GK") this.controlledId = taker.uid;
+    this.ball.kickAt = this.now;
+    if (taker && side === this.userSide && !this.lockControl && !this.referee && taker.role !== "GK") this.controlledId = taker.uid;
   }
 
   private updateAI(dt: number) {
@@ -1461,7 +1678,13 @@ export class MatchSim implements FieldView {
         .filter((q) => q.on && !q.red && q.role !== "GK" && (this.simming || q.uid !== this.controlledId))
         .sort((a, b) => dist(a, this.ball) - dist(b, this.ball));
       const oppHas = !owner || owner.side !== side;
-      if (oppHas && list[0]) duty[list[0].uid] = "press";
+      const loose = !owner && !this.dead;
+      const aiSide = this.referee || side !== this.userSide;
+      const legend = aiSide && this.diff.press >= 2;
+      const organised = aiSide && this.diff.tackle >= 0.85;
+      if ((oppHas || loose) && list[0]) duty[list[0].uid] = "press";
+      if (oppHas && list[1] && (legend || this.referee || (organised && this.attack(side) * this.ball.y < 6))) duty[list[1].uid] = "press";
+      if (oppHas && list[2] && (legend || this.referee)) duty[list[2].uid] = "press";
       if (owner?.side === side) {
         for (const q of list.filter((m) => m.uid !== owner.uid).slice(0, 2)) duty[q.uid] = "support";
       }
@@ -1477,10 +1700,10 @@ export class MatchSim implements FieldView {
       if (owner?.uid === p.uid) {
         if (p.think <= 0) {
           const tempo = this.speedMul;
-          const calm = tempo < 0.85 ? 1.18 : tempo > 1.15 ? 0.8 : 1;
+          const calm = tempo < 0.85 ? 1.16 : tempo < 1.05 ? 1.1 : tempo > 1.15 ? 0.84 : 1;
           const rivalMind = this.referee || p.side !== this.userSide;
-          const iq = rivalMind ? 0.96 + this.diff.acc * 0.28 : 1.05;
-          p.think = (p.role === "GK" ? 0.32 : this.tactic[p.side] === "tiki" ? 0.4 : 0.28) * calm / iq;
+          const iq = this.referee ? 1.35 : rivalMind ? 0.95 + this.diff.acc * 0.55 : 0.9;
+          p.think = (p.role === "GK" ? 0.42 : this.referee ? 0.36 : 0.72) * calm / iq;
           this.aiOnBall(p);
         }
         if (this.ball.owner === p.uid && p.order && p.role !== "GK") {
@@ -1488,15 +1711,20 @@ export class MatchSim implements FieldView {
           ty = p.ty;
         }
       } else p.order = false;
+      if (this.dead && p.uid === this.setPieceId && (this.simming || p.uid !== this.controlledId)) {
+        tx = this.dead.x;
+        ty = this.dead.y - this.attack(this.dead.side) * 1.05;
+      }
       const dx = tx - p.x;
       const dy = ty - p.y;
       const d = hypot(dx, dy) || 1;
       const live = this.live(p);
       const rival = this.referee || p.side !== this.userSide;
       const carrying = owner?.uid === p.uid;
-      const diffPace = rival ? 0.86 + this.diff.speed * 0.16 : 0.96;
-      const jobBoost = job === "press" ? 1.1 : job === "support" ? 1.05 : 1;
-      const pace = (4.35 + (live.speed / 100) * 2.7) * diffPace * this.paceScale(p) * (carrying ? 0.94 : 0.9) * jobBoost * (0.78 + 0.22 * (p.stamina / 100)) * (0.9 + 0.1 * (p.fitness / 100));
+      const diffPace = this.referee ? 1.12 : rival ? 0.88 + this.diff.speed * 0.18 : 0.96;
+      const jobBoost = job === "press" ? (this.referee ? 1.18 : 1.1) : job === "support" ? 1.04 : 1;
+      const pieceBoost = this.dead && p.uid === this.setPieceId ? 1.3 : 1;
+      const pace = (4.35 + (live.speed / 100) * 2.7) * diffPace * this.paceScale(p) * (carrying ? 0.94 : 0.9) * jobBoost * pieceBoost * (0.78 + 0.22 * (p.stamina / 100)) * (0.9 + 0.1 * (p.fitness / 100));
       const spd = d < 0.65 ? pace * d : pace;
       const k = Math.min(1, dt * (carrying ? 7 : 6.2));
       p.vx += ((dx / d) * spd - p.vx) * k;
@@ -1512,43 +1740,121 @@ export class MatchSim implements FieldView {
         owner.side !== p.side &&
         owner.role !== "GK" &&
         p.role !== "GK" &&
-        p.cd <= 0;
-      const arm = job === "press" ? 2.2 : 1.9;
-      if (mayTackle && owner && dist(p, owner) < arm) {
+        p.cd <= 0 &&
+        !this.dead;
+      const line = this.lineRole(p);
+      const back = line === "CB" || line === "LB" || line === "RB" || line === "CDM";
+      const legend = rival && this.diff.press >= 2;
+      const stepOut = Boolean(owner && back && rival && this.diff.tackle >= 0.85 && dist(p, owner) < (legend ? 3.6 : 2.7));
+      const arm = this.referee ? 2.65 : job === "press" ? (legend ? 2.45 : 2.2) : stepOut ? 2.15 : 1.55;
+      if (mayTackle && owner && dist(p, owner) < arm && (job === "press" || stepOut || Math.random() < (this.referee ? 0.72 : 0.34))) {
         const tempo = this.speedMul;
-        p.cd = tempo > 1.15 ? 1.28 : tempo < 0.85 ? 1.72 : 1.48;
-        const rough = this.style[p.side] === "rough" || this.tactic[p.side] === "press";
+        p.cd = this.referee ? 0.72 : tempo > 1.15 ? 1.35 : tempo < 0.85 ? 1.85 : 1.55;
+        const behind = this.fromBehind(p, owner);
         const mine = this.live(p);
         const hold = this.live(owner);
-        const skill = rival ? clamp(0.4 + this.diff.tackle * 0.42, 0.4, 0.92) : 0.58;
-        const win = clamp(0.22 + skill * 0.38 + (mine.hardness - hold.hardness) / 420, 0.18, 0.66);
-        const foulP = clamp(0.055 + (1 - skill) * 0.12 + (rough ? 0.04 : 0), 0.05, 0.22);
-        if (Math.random() < win) this.popBall(owner, p);
-        else if (Math.random() < foulP) this.foul(p, owner);
+        const skill = rival ? clamp(0.38 + this.diff.tackle * 0.42, 0.38, 0.92) : 0.5;
+        const win = clamp(0.18 + skill * 0.4 + (mine.hardness - hold.hardness) / 480 - (behind ? 0.22 : 0), 0.12, legend ? 0.72 : 0.62);
+        const foulP = this.referee ? 0.42 : behind ? 0.5 : 0.38;
+        if (!behind && Math.random() < win) this.popBall(owner, p);
+        else if (dist(p, owner) < (this.referee ? 1.7 : 1.5) && Math.random() < foulP) this.foul(p, owner, this.booking(p, owner, behind, false));
       }
     }
-    if (this.dead && this.dead.wait > 0) {
-      this.dead.wait -= dt;
-      if (this.dead.wait <= 0 && this.ball.owner && (this.simming || this.referee || this.ball.lastSide !== this.userSide)) {
-        const taker = this.players.find((p) => p.uid === this.ball.owner);
-        if (taker) {
-          if (this.dead.kind === "penalty" || dist(taker, { x: 0, y: this.attack(taker.side) * HALF_L }) < 22) this.shoot(taker);
-          else this.pass(taker);
-        }
-      }
+    this.serviceDead(dt);
+  }
+
+  private ballTempo() {
+    if (this.speedMul < 0.9) return 0.86;
+    if (this.speedMul < 1.05) return 0.93;
+    if (this.speedMul > 1.3) return 1.42;
+    return 1.16;
+  }
+
+  private serviceDead(dt: number) {
+    if (!this.dead || this.phase !== "play") return;
+    this.dead.age = (this.dead.age ?? 0) + dt;
+    const taker = this.players.find((p) => p.uid === this.setPieceId && p.on && !p.red);
+    if (!taker) return;
+    const manual = !this.simming && !this.referee && taker.side === this.userSide && taker.uid === this.controlledId;
+    if (manual) {
+      if (dist(taker, this.dead) < 1.75) this.ball.owner = taker.uid;
+      return;
     }
+    const spot = { x: this.dead.x, y: this.dead.y - this.attack(taker.side) * 1.05 };
+    const arrived = dist(taker, spot) < 1.5;
+    const age = this.dead.age ?? 0;
+    const hardOpp = !this.referee && taker.side !== this.userSide && (this.level === "world" || this.level === "legend");
+    if (arrived && age > (hardOpp ? 0.4 : 0.6)) this.takeSetPiece(taker);
+    else if (hardOpp && age > 1.05 && dist(taker, this.dead) < 16) {
+      const d = dist(taker, this.dead) || 1;
+      const step = Math.min(4, Math.max(0, d - 0.9));
+      taker.x += ((this.dead.x - taker.x) / d) * step;
+      taker.y += ((this.dead.y - taker.y) / d) * step;
+      taker.vx = 0;
+      taker.vy = 0;
+      if (dist(taker, this.dead) < 2.2) this.takeSetPiece(taker);
+    } else if (age > 6.5 && dist(taker, this.dead) < 4) {
+      const d = dist(taker, this.dead) || 1;
+      const step = Math.min(1.5, d - 0.85);
+      taker.x += ((this.dead.x - taker.x) / d) * step;
+      taker.y += ((this.dead.y - taker.y) / d) * step;
+      taker.vx = 0;
+      taker.vy = 0;
+      this.takeSetPiece(taker);
+    }
+  }
+
+  /** A set piece is a real strike or a short pass, never a jump across the pitch. */
+  private takeSetPiece(p: RT) {
+    if (!this.dead) return;
+    const kind = this.dead.kind;
+    const atk = this.attack(p.side);
+    this.ball.x = this.dead.x;
+    this.ball.y = this.dead.y;
+    this.ball.z = 0;
+    this.ball.vx = 0;
+    this.ball.vy = 0;
+    this.ball.vz = 0;
+    const gy = atk * HALF_L;
+    const gd = dist({ x: this.dead.x, y: this.dead.y }, { x: 0, y: gy });
+    p.yaw = Math.atan2(-(0 - p.x), atk);
+    const hardOpp = !this.referee && p.side !== this.userSide && (this.level === "world" || this.level === "legend");
+    const closeShot = kind === "freekick" && gd < 28 && Math.abs(this.dead.x) < 16;
+    const hardShot = hardOpp && kind === "freekick" && gd < 36 && Math.abs(this.dead.x) < 22;
+    if (kind === "penalty" || closeShot || hardShot) {
+      this.shoot(p);
+      return;
+    }
+    if (hardOpp && kind === "freekick") {
+      const spotY = atk * (HALF_L - 16);
+      this.kick(p, -p.x * 0.2, spotY - p.y, clamp(18 + gd * 0.1, 18, 28), gd > 42 ? 0.7 : 0.5, false);
+      this.banner = tr(`Штрафной. ${p.name}`, `Free kick. ${p.name}`);
+      this.bannerT = 1.4;
+      return;
+    }
+    const mate = this.bestMate(p, this.relayUid);
+    const forward = mate ? atk * (mate.y - p.y) : -1;
+    if (mate && forward > -2 && dist(p, mate) < 24) {
+      const gap = dist(p, mate);
+      const pace = clamp(11 + gap * 0.38, 12, 20);
+      const lift = kind === "corner" || kind === "goalkick" ? 0.42 : 0.14;
+      this.kick(p, mate.x - p.x, mate.y - p.y + atk * 0.8, pace, lift, false);
+      return;
+    }
+    this.kick(p, -p.x * 0.15, atk * 16, 15, kind === "goalkick" ? 0.36 : 0.16, false);
   }
 
   private paceScale(p: RT) {
     const rate = clamp(p.speed / 100, 0.45, 1);
-    if (this.speedMul < 0.85) return 0.8 + rate * 0.05;
-    if (this.speedMul > 1.15) return 1.12 + rate * 0.07;
-    return 0.94 + rate * 0.06;
+    if (this.speedMul < 0.9) return 0.84 + rate * 0.04;
+    if (this.speedMul < 1.05) return 0.91 + rate * 0.04;
+    if (this.speedMul > 1.3) return 1.34 + rate * 0.08;
+    return 1.12 + rate * 0.06;
   }
 
   private passErr(p: RT) {
-    if (p.uid === this.controlledId && !this.simming) return this.speedMul > 1.15 ? 1.25 : 1;
-    const tempo = this.speedMul < 0.85 ? 0.94 : this.speedMul > 1.15 ? 1.1 : 1;
+    if (p.uid === this.controlledId && !this.simming) return this.speedMul > 1.3 ? 1.25 : 1;
+    const tempo = this.speedMul < 0.85 ? 0.94 : this.speedMul < 1.05 ? 0.95 : this.speedMul > 1.3 ? 1.1 : 1;
     const iq = this.referee || p.side !== this.userSide ? 1.32 - this.diff.acc * 0.68 : 0.9;
     return tempo * iq;
   }
@@ -1565,39 +1871,47 @@ export class MatchSim implements FieldView {
     const edgeY = HALF_L - 1.8;
     if (job === "press") {
       const rival = this.referee || p.side !== this.userSide;
-      const stop = rival ? clamp(1.08 - this.diff.tackle * 0.2, 0.82, 1.08) : 0.98;
+      const stop = rival ? clamp(1.5 - this.diff.tackle * 0.72, this.diff.press >= 2 ? 0.48 : 0.85, 1.45) : 0.98;
       const mark = owner && owner.side !== p.side ? owner : null;
       const qx = mark ? mark.x : this.ball.x;
       const qy = mark ? mark.y : this.ball.y;
-      const crowding = this.sidePlayers(p.side).filter((q) => q.uid !== p.uid && q.on && q.role !== "GK" && hypot(q.x - qx, q.y - qy) < 8.2).length;
-      if (crowding >= 2) return spot;
+      const buddies = this.sidePlayers(p.side).filter((q) => q.uid !== p.uid && q.on && q.role !== "GK" && hypot(q.x - qx, q.y - qy) < 3.4).length;
+      const ox = buddies ? (p.slot % 2 === 0 ? 1.6 : -1.6) : 0;
       const dx = qx - p.x;
       const dy = qy - p.y;
       const d = hypot(dx, dy) || 1;
       return {
-        x: clamp(qx - (dx / d) * stop, -edgeX, edgeX),
+        x: clamp(qx - (dx / d) * stop + ox, -edgeX, edgeX),
         y: clamp(qy - (dy / d) * stop, -edgeY, edgeY),
       };
     }
     if (job === "support") {
       const atk = this.attack(p.side);
       const flank = Math.sign(spot.x || (p.slot % 2 ? 1 : -1)) || 1;
-      const wantX = clamp(this.ball.x + flank * 6.5, -edgeX, edgeX);
-      const wantY = clamp(this.ball.y + atk * 5.5, -edgeY, edgeY);
-      const step = 6.5;
-      return this.keepOnside(p, 
-        clamp(spot.x + clamp(wantX - spot.x, -step, step), -edgeX, edgeX),
-        clamp(spot.y + clamp(wantY - spot.y, -step, step), -edgeY, edgeY),
-      );
+      const sharp = !this.referee && p.side !== this.userSide && this.diff.acc >= 0.65;
+      const wantX = clamp(spot.x * 0.65 + flank * (sharp ? 6.5 : 5), -edgeX, edgeX);
+      const wantY = clamp(spot.y + atk * (sharp ? 12 : 8), -edgeY, edgeY);
+      return this.keepOnside(p, wantX, wantY);
     }
     const atk = this.attack(p.side);
     const line = this.lineRole(p);
     const wobx = Math.sin(this.now * 0.8 + p.slot * 1.7) * 0.42;
     let y = spot.y + Math.cos(this.now * 0.65 + p.slot) * 0.22;
     const attacking = owner?.side === p.side;
+    if (!attacking && (line === "CB" || line === "LB" || line === "RB" || line === "CDM")) {
+      const drop = this.referee ? 8 : this.diff.press >= 2 ? 6.2 : this.diff.tackle >= 0.85 ? 11 : 14;
+      if (atk * y > atk * this.ball.y - 4) y = this.ball.y - atk * drop;
+    }
     if (attacking && (line === "ST" || line === "LW" || line === "RW" || line === "CAM")) {
       const run = Math.sin(this.now * 0.42 + p.slot * 0.9);
-      if (run > 0.9) y += atk * 2.2;
+      const rival = this.referee || p.side !== this.userSide;
+      let gate = this.referee ? -0.05 : this.diff.press >= 2 ? 0.02 : this.diff.acc >= 0.65 ? 0.1 : 0.42;
+      let burst = this.referee ? 8.2 : this.diff.press >= 2 ? 9 : this.diff.acc >= 0.65 ? 6.6 : 2.2 + (rival ? this.diff.acc * 4.6 : 1.2);
+      if (!this.referee && p.side !== this.userSide && this.level !== "novice") {
+        burst += 6;
+        gate = Math.min(gate, 0.05);
+      }
+      if (run > gate) y += atk * burst;
     }
     return this.keepOnside(p, clamp(spot.x + wobx, -edgeX, edgeX), clamp(y, -edgeY, edgeY));
   }
@@ -1610,7 +1924,7 @@ export class MatchSim implements FieldView {
       .sort((a, b) => atk * b.y - atk * a.y);
     const line = defs[1]?.y ?? defs[0]?.y;
     if (line == null) return { x, y };
-    const run = Math.sin(this.now * 0.48 + p.slot * 1.15) > 0.88;
+    const run = Math.sin(this.now * 0.48 + p.slot * 1.15) > (this.referee ? 0.12 : this.diff.press >= 2 ? 0.22 : 0.55);
     if (!run && atk * y > atk * line - 0.5 && atk * y > 0.5) {
       const nextY = line - atk * 1.2;
       const nextD = hypot(x - this.ball.x, nextY - this.ball.y);
@@ -1618,9 +1932,11 @@ export class MatchSim implements FieldView {
       if (!(nextD < 8 && had > 8)) y = nextY;
     }
     const bd = hypot(x - this.ball.x, y - this.ball.y);
-    if (bd < 9.1 && bd > 0.15) {
-      x = this.ball.x + ((x - this.ball.x) / bd) * 9.1;
-      y = this.ball.y + ((y - this.ball.y) / bd) * 9.1;
+    const loose = !this.ball.owner && !this.dead;
+    const gap = loose ? 0 : this.referee || this.diff.press >= 2 ? 7.2 : this.diff.tackle >= 0.85 ? 9.6 : 11.2;
+    if (gap > 0 && bd < gap && bd > 0.15) {
+      x = this.ball.x + ((x - this.ball.x) / bd) * gap;
+      y = this.ball.y + ((y - this.ball.y) / bd) * gap;
     }
     return {
       x: clamp(x, -HALF_W + 1.8, HALF_W - 1.8),
@@ -1633,7 +1949,7 @@ export class MatchSim implements FieldView {
       if (!p.on || p.red || p.role !== "GK") continue;
       const atk = this.attack(p.side);
       const goalY = -atk * HALF_L;
-      const along = clamp(atk * (p.y - goalY), 0.4, 15.2);
+      const along = clamp(atk * (p.y - goalY), 0.35, 6.2);
       p.y = goalY + atk * along;
       p.x = clamp(p.x, -19.2, 19.2);
       if (this.ball.owner === p.uid) this.stick();
@@ -1644,11 +1960,13 @@ export class MatchSim implements FieldView {
     const atk = this.attack(p.side);
     const goalY = -atk * HALF_L;
     const depth = Math.abs(this.ball.y - goalY);
-    const inPen = Math.abs(this.ball.x) < 20 && depth < 16.5;
-    const follow = inPen ? 0.72 : 0.28;
-    const x = clamp(this.ball.x * follow, -12, 12);
-    let step = 0.7;
-    if (inPen) step = clamp(15.2 - depth * 0.35, 1.2, 14.2);
+    const inBox = Math.abs(this.ball.x) < 18 && depth < 16.5;
+    const near = depth < 8 && Math.abs(this.ball.x) < 10;
+    const read = this.keeperRead(p);
+    const x = clamp(this.ball.x * (near ? 0.36 : inBox ? 0.24 : 0.12) * read, -4.6 * read, 4.6 * read);
+    let step = 0.45;
+    if (inBox) step = clamp(0.8 + (16.5 - depth) * 0.16, 0.6, 4.6);
+    if (near) step = Math.min(step, 2.8);
     return { x, y: goalY + atk * step };
   }
 
@@ -1658,13 +1976,12 @@ export class MatchSim implements FieldView {
     if (!owner || owner.role === "GK") return;
     const gk = this.sidePlayers((1 - owner.side) as 0 | 1).find((q) => q.role === "GK" && q.on && !q.red);
     if (!gk) return;
-    const tough = this.referee || gk.side !== this.userSide;
-    if (!tough) return;
     const goalY = -this.attack(gk.side) * HALF_L;
     const depth = Math.abs(owner.y - goalY);
-    if (Math.abs(owner.x) > 16 || depth > 16.5) return;
-    const reach = 1.25 + this.diff.save * 1.35;
-    if (dist(gk, owner) > reach) return;
+    if (Math.abs(owner.x) > 9 || depth > 8) return;
+    let arm = 1.02 + this.keeperRead(gk) * 1.2;
+    if (!this.referee && gk.side === this.userSide && this.level !== "novice") arm *= 0.7;
+    if (dist(gk, owner) > arm) return;
     this.ball.owner = gk.uid;
     this.ball.lastUid = gk.uid;
     this.ball.lastSide = gk.side;
@@ -1672,7 +1989,7 @@ export class MatchSim implements FieldView {
     this.ball.offside.clear();
     this.ball.fromThrow = false;
     this.stick();
-    this.banner = `Забрал ${gk.name}`;
+    this.banner = tr(`Забрал ${gk.name}`, `Claimed by ${gk.name}`);
     this.bannerT = 1.2;
   }
 
@@ -1696,7 +2013,7 @@ export class MatchSim implements FieldView {
       this.ball.lastUid = p.uid;
       this.ball.lastSide = p.side;
       this.ball.kickAt = this.now;
-      this.banner = `Блок ${p.name}`;
+      this.banner = tr(`Блок ${p.name}`, `Blocked by ${p.name}`);
       this.bannerT = 1.1;
       return;
     }
@@ -1781,7 +2098,10 @@ export class MatchSim implements FieldView {
       y = home.y + atk * 4;
     }
     if ((this.referee || p.side !== this.userSide) && tactic !== "bus" && line !== "ST") {
-      y += atk * this.diff.press * 2.1;
+      if (this.referee) y += atk * 4.2;
+      else if (this.diff.press >= 2) y += atk * (line === "LW" || line === "RW" || line === "CAM" ? 7.2 : 8.6);
+      else if (this.diff.tackle >= 0.85 && (line === "CB" || line === "LB" || line === "RB" || line === "CDM")) y += atk * 0.4;
+      else y += atk * this.diff.press * 1.15;
     }
     return {
       x: clamp(x, -HALF_W + 1.8, HALF_W - 1.8),
@@ -1795,56 +2115,77 @@ export class MatchSim implements FieldView {
     const gy = atk * HALF_L;
     const gd = dist(p, { x: 0, y: gy });
     const rival = this.referee || p.side !== this.userSide;
-    const acc = (rival ? this.diff.acc : 0.74) * (this.live(p).accuracy / 78);
+    const iq = this.referee ? 0.94 : rival ? this.diff.acc : 0.58;
+    const avoid = this.now - this.relayAt < 3.4 ? this.relayUid : "";
     if (p.role === "GK") {
-      const mate = this.bestMate(p) ?? this.fallbackMate(p);
+      const mate = this.bestMate(p, avoid) ?? this.fallbackMate(p);
       if (mate) {
         const gap = dist(p, mate);
-        this.kick(p, mate.x - p.x, mate.y - p.y, this.passPace(gap, tactic === "bus" || tactic === "counter" || tactic === "direct" ? 0.95 : 0.72), 0.35, false);
-      } else this.kick(p, 0, atk * 20, this.passPace(28, 0.9), 0.45, false);
+        this.kick(p, mate.x - p.x, mate.y - p.y + atk * 1.4, this.passPace(gap, 0.7), 0.28, false);
+      } else this.kick(p, (Math.random() - 0.5) * 6, atk * 22, this.passPace(26, 0.88), 0.38, false);
       return;
     }
-    if ((tactic === "bus" || tactic === "counter") && atk * p.y < -24) {
-      const st = this.sidePlayers(p.side).find((m) => m.role === "ST" && m.uid !== p.uid);
-      if (st) {
-        this.kick(p, st.x - p.x, st.y - p.y, this.passPace(dist(p, st), 0.92), 0.55, false);
-        return;
-      }
-    }
-    const rushed = this.speedMul > 1.15;
-    const slow = this.speedMul < 0.85;
+    const foes = this.sidePlayers((1 - p.side) as 0 | 1).filter((f) => f.on && f.role !== "GK");
+    const pressed = foes.some((f) => dist(p, f) < 3.25);
     const finisher = p.role === "ST" || p.role === "LW" || p.role === "RW" || p.role === "CAM";
-    if (gd < 28 && Math.abs(p.x) < 14) {
-      const urge = (finisher || gd < 16 ? 0.16 : 0.05) + acc * 0.07;
-      if (gd < 9 || Math.random() < urge * (slow ? 0.88 : rushed ? 1.1 : 1)) {
+    const inBox = gd < 16.5 && Math.abs(p.x) < 14;
+    const legend = rival && this.diff.press >= 2;
+    const sharp = rival && this.diff.acc >= 0.65;
+    const closeIn = !this.referee && p.side !== this.userSide && this.level !== "novice";
+    if ((legend || closeIn) && !inBox && gd > 16 && !pressed) {
+      /* carry it closer to the goal instead of shooting from distance */
+    } else if (closeIn && gd < 18 && Math.abs(p.x) < 15 && Math.random() < 0.78) {
+      this.shoot(p);
+      return;
+    } else if (inBox && (finisher || gd < 12 || legend || this.referee)) {
+      const take = this.referee ? 0.9 : legend ? 0.88 : sharp ? 0.78 : 0.45 + iq * 0.45;
+      if (Math.random() < take) {
         this.shoot(p);
         return;
       }
-    }
-    if (gd > 16 && gd < 42 && Math.random() < (finisher ? 0.22 : 0.08)) {
-      p.order = true;
-      p.tx = clamp(p.x * 0.4, -9, 9);
-      p.ty = clamp(p.y + atk * (slow ? 7.5 : rushed ? 10 : 8.5), -HALF_L + 4, HALF_L - 4);
+    } else if (sharp && gd < 23 && Math.abs(p.x) < 13 && (finisher || gd < 18) && Math.random() < (this.diff.acc >= 0.9 ? 0.52 : 0.36)) {
+      this.shoot(p);
+      return;
+    } else if (!legend && gd < 20 + iq * 14 && Math.abs(p.x) < 16 && (finisher || this.referee) && Math.random() < (this.referee ? 0.48 : sharp ? 0.22 + iq * 0.35 : 0.06 + iq * 0.4)) {
+      this.shoot(p);
+      return;
+    } else if (legend && gd < 16 && Math.abs(p.x) < 14 && Math.random() < 0.72) {
+      this.shoot(p);
+      return;
+    } else if (rival && iq < 0.35 && gd < 32 && Math.abs(p.x) < 16 && Math.random() < 0.06) {
+      this.shoot(p);
       return;
     }
-    const mate = this.bestMate(p) ?? this.fallbackMate(p);
-    const passP = rushed ? 0.74 : slow ? 0.66 : 0.78;
-    const wantPass = tactic === "tiki" ? (gd < 26 ? 0.58 : passP + 0.08) : passP;
-    if (mate && Math.random() < wantPass) {
+    if ((tactic === "bus" || tactic === "counter") && atk * p.y < -22 && pressed) {
+      const st = this.sidePlayers(p.side).find((m) => m.role === "ST" && m.uid !== p.uid && m.uid !== avoid);
+      if (st && atk * (st.y - p.y) > 8) {
+        this.kick(p, st.x - p.x, st.y - p.y, this.passPace(dist(p, st), 0.84), 0.4, false);
+        return;
+      }
+    }
+    const mate = this.bestMate(p, avoid);
+    const forward = mate ? atk * (mate.y - p.y) : -99;
+    const useful = Boolean(mate && (forward > 3.5 || (pressed && forward > -1)));
+    const passP = pressed ? 0.62 : tactic === "tiki" ? 0.28 : 0.18;
+    if (useful && mate && Math.random() < passP) {
       const gap = dist(p, mate);
-      const weight = tactic === "tiki" ? 0.58 : tactic === "direct" || tactic === "counter" ? 0.86 : 0.68;
-      const lead = Math.random() < 0.05 ? atk * (1.6 + Math.random() * 2) : 0;
-      this.kick(p, mate.x - p.x, mate.y - p.y + lead, this.passPace(gap, weight), tactic === "direct" ? 0.28 : 0.16, false);
+      const weight = tactic === "direct" || tactic === "counter" ? 0.78 : 0.62;
+      this.kick(p, mate.x - p.x, mate.y - p.y + atk * 0.6, this.passPace(gap, weight), gap > 20 ? 0.22 : 0.1, false);
       return;
     }
-    const home = this.shapePoint(p);
+    if (pressed && atk * p.y < -16) {
+      this.kick(p, (Math.random() - 0.5) * 8, atk * 26, this.passPace(22, 0.9), 0.36, false);
+      return;
+    }
+    const step = this.speedMul > 1.3 ? 9 : this.speedMul < 0.85 ? 6.2 : this.speedMul < 1.05 ? 6.35 : 7.4;
+    const drive = rival && this.diff.acc >= 0.65 ? (this.diff.acc >= 0.9 ? 4.4 : 2.6) : 0;
+    const hunt = !this.referee && p.side !== this.userSide && this.level !== "novice" ? 4.2 : 0;
     p.order = true;
-    const carry = rushed ? 8.4 : slow ? 6.2 : 7.2;
-    p.tx = clamp(home.x + clamp(p.x - home.x, -4, 4), -HALF_W + 3, HALF_W - 3);
-    p.ty = clamp(home.y + atk * carry, -HALF_L + 4, HALF_L - 4);
+    p.tx = clamp(p.x * 0.45, -11, 11);
+    p.ty = clamp(p.y + atk * (step + drive + hunt), -HALF_L + 3, HALF_L - 3);
   }
 
-  private bestMate(p: RT) {
+  private bestMate(p: RT, avoid = "") {
     const tactic = this.tactic[p.side];
     let best: RT | null = null;
     let score = -999;
@@ -1859,7 +2200,11 @@ export class MatchSim implements FieldView {
       const forward = atk * (m.y - p.y);
       const wide = Math.abs(m.x) - Math.abs(p.x);
       let s = 0.2;
-      if (!this.safePass(p, m) && Math.random() > 0.16) s -= 5;
+      if (m.uid === avoid) s -= 7;
+      if (forward < -1.5) s -= 3.2;
+      if (forward > 4) s += 1.8;
+      const leak = this.referee ? 0.62 : 0.4;
+      if (!this.safePass(p, m) && Math.random() > leak) s -= 5;
       if (tactic === "tiki") s += (d > 6 && d < 14 ? 2.2 : 0.4) + Math.max(0, forward) * 0.04 - Math.abs(m.x - p.x) * 0.01;
       else if (tactic === "direct" || tactic === "counter") s += forward * 0.12 + (m.role === "ST" ? 1.5 : 0);
       else if (tactic === "wing") s += wide * 0.12 + forward * 0.04 + (m.role === "LW" || m.role === "RW" || m.role === "LM" || m.role === "RM" ? 1.1 : 0);
@@ -1950,6 +2295,15 @@ export class MatchSim implements FieldView {
   }
 
   private ballPhysics(dt: number) {
+    if (this.dead) {
+      this.ball.x = this.dead.x;
+      this.ball.y = this.dead.y;
+      this.ball.z = 0;
+      this.ball.vx = 0;
+      this.ball.vy = 0;
+      this.ball.vz = 0;
+      return;
+    }
     if (this.ball.owner) {
       this.stick();
       return;
@@ -1971,6 +2325,44 @@ export class MatchSim implements FieldView {
       this.ball.vy *= 0.92;
     }
     this.tryClaim();
+    this.scoopLoose(dt);
+  }
+
+  /** A ball that has stopped under someone's feet is a possession, not scenery. */
+  private scoopLoose(dt: number) {
+    if (this.ball.owner || this.dead || this.phase !== "play") {
+      this.looseAge = 0;
+      return;
+    }
+    const spd = hypot(this.ball.vx, this.ball.vy);
+    if (spd < 7 && this.ball.z < 0.45) this.looseAge += dt;
+    else this.looseAge = 0;
+    if (this.looseAge < 0.35) return;
+    let best: RT | null = null;
+    let bestD = 3.1;
+    for (const p of this.players) {
+      if (!p.on || p.red || !this.canTouch(p) || p.role === "GK") continue;
+      const d = dist(p, this.ball);
+      if (d < bestD) {
+        best = p;
+        bestD = d;
+      }
+    }
+    if (!best) return;
+    if (this.ball.offside.has(best.uid)) {
+      this.callOffside(best);
+      return;
+    }
+    this.ball.owner = best.uid;
+    this.ball.lastUid = best.uid;
+    this.ball.lastSide = best.side;
+    this.ball.vx = 0;
+    this.ball.vy = 0;
+    this.ball.vz = 0;
+    this.ball.offside.clear();
+    this.ball.fromThrow = false;
+    this.looseAge = 0;
+    this.stick();
   }
 
   private tryClaim() {
@@ -1981,7 +2373,8 @@ export class MatchSim implements FieldView {
     const user = this.ctrl();
     if (user && user.on && this.canTouch(user)) {
       const d = dist(user, this.ball);
-      if (d < 1.45 && this.canReceive(user, d, spd)) {
+      const reach = this.claimReach(user);
+      if (d < reach && this.canReceive(user, d, spd)) {
         best = user;
         bestD = d;
       }
@@ -2004,7 +2397,7 @@ export class MatchSim implements FieldView {
     }
     if (best.role === "GK" && best.side === this.ball.lastSide && this.ball.z < 0.4 && hypot(this.ball.vx, this.ball.vy) < 10 && this.now - this.ball.kickAt < 2) {
       this.dead = { kind: "freekick", side: (1 - best.side) as 0 | 1, x: best.x, y: best.y + this.attack((1 - best.side) as 0 | 1) * 1, wait: 0.4 };
-      this.banner = "Пас вратарю рукой нельзя";
+      this.banner = tr("Пас вратарю рукой нельзя", "You cannot pass to the keeper with your hands");
       this.bannerT = 1.8;
       this.giveDead(this.dead.side);
       return;
@@ -2017,19 +2410,30 @@ export class MatchSim implements FieldView {
   }
 
   private claimReach(p: RT) {
-    if (p.role !== "GK") return p.uid === this.controlledId && !this.simming ? 1.2 : 1.48;
+    if (p.role !== "GK") {
+      const slow = hypot(this.ball.vx, this.ball.vy) < 12 && this.ball.z < 0.5;
+      if (p.uid === this.controlledId && !this.simming) return slow ? 2.05 : 1.4;
+      return slow ? 2.25 : 1.62;
+    }
     const goalY = -this.attack(p.side) * HALF_L;
     const depth = Math.abs(this.ball.y - goalY);
     const inBox = Math.abs(this.ball.x) < 18 && depth < 16;
     const tough = this.referee || p.side !== this.userSide;
-    if (inBox && tough) return 2.05 + this.diff.save * 0.4;
-    if (inBox) return 2.15;
-    return 1.75;
+    const read = this.keeperRead(p);
+    if (inBox && tough) return 1.2 + read * 1.25;
+    if (inBox && p.side === this.userSide && !this.referee && this.level !== "novice") return 1.15;
+    if (inBox) return 1.65;
+    return 1.4;
   }
 
   private canReceive(p: RT, d: number, spd: number) {
-    if (p.role === "GK") return spd < 34 || d < 2.2;
-    if (spd < 15) return true;
+    if (p.role === "GK") {
+      const leaky = !this.referee && p.side === this.userSide && this.level !== "novice";
+      if (leaky && spd > 12) return false;
+      return spd < 36 || d < 2.4;
+    }
+    if (this.ball.z < 0.55 && spd < 12 && d < 2.05) return true;
+    if (spd < 16 && d < 1.7) return true;
     const teammate = this.ball.lastSide === p.side;
     if (teammate) {
       const userTouch = p.uid === this.controlledId && !this.simming;
@@ -2052,8 +2456,8 @@ export class MatchSim implements FieldView {
     if (this.referee) {
       if (!this.incident) {
         const side = (1 - p.side) as 0 | 1;
-        this.incident = { kind: "offside", by: p.name, victim: "", inBox: false, side, x: p.x, y: p.y, actor: p, victimPlayer: null };
-        this.banner = `Офсайд? ${p.name}`;
+        this.incident = { kind: "offside", by: p.name, victim: "", inBox: false, side, x: p.x, y: p.y, actor: p, victimPlayer: null, expect: "none" };
+        this.banner = tr(`Офсайд? ${p.name}`, `Offside? ${p.name}`);
         this.bannerT = 2;
       }
       return;
@@ -2065,7 +2469,7 @@ export class MatchSim implements FieldView {
     const side = (1 - p.side) as 0 | 1;
     this.dead = { kind: "freekick", side, x: clamp(p.x, -HALF_W + 1, HALF_W - 1), y: clamp(p.y, -HALF_L + 2, HALF_L - 2), wait: 0.45 };
     this.ball.offside.clear();
-    this.banner = `Офсайд. ${p.name}`;
+    this.banner = tr(`Офсайд. ${p.name}`, `Offside. ${p.name}`);
     this.bannerT = 1.8;
     this.offN[p.side] += 1;
     audio.whistle();
@@ -2107,14 +2511,14 @@ export class MatchSim implements FieldView {
         this.ball.vz = 1.8;
         this.ball.z = post ? Math.min(z, 1.6) : 2.1;
         this.ball.owner = null;
-        this.banner = post ? "Штанга!" : "Перекладина!";
+        this.banner = post ? tr("Штанга!", "Post!") : tr("Перекладина!", "Bar!");
         this.bannerT = 1.6;
         return;
       }
       if (mouth && z < 2.05) {
         if (this.ball.fromThrow) {
           this.dead = { kind: "goalkick", side: (1 - scoring) as 0 | 1, x: 0, y: -this.attack((1 - scoring) as 0 | 1) * 46, wait: 0.5 };
-          this.banner = "С аута гол не засчитывается";
+          this.banner = tr("С аута гол не засчитывается", "A goal from a throw-in does not count");
           this.bannerT = 1.6;
           this.giveDead(this.dead.side);
           return;
@@ -2128,10 +2532,10 @@ export class MatchSim implements FieldView {
       const keeperOut = lastPlayer?.role === "GK" && lastPlayer.side !== attackSide;
       if (!keeperOut && last === attackSide) {
         this.dead = { kind: "goalkick", side: (1 - attackSide) as 0 | 1, x: Math.sign(crossX) * 6, y: goalY - Math.sign(goalY) * 5.5, wait: 0.45 };
-        this.banner = z >= 2.05 ? "Выше ворот" : "Удар от ворот";
+        this.banner = z >= 2.05 ? tr("Выше ворот", "Over the bar") : tr("Удар от ворот", "Goal kick");
       } else {
         this.dead = { kind: "corner", side: attackSide, x: Math.sign(crossX || 1) * (HALF_W - 0.6), y: goalY - Math.sign(goalY) * 0.6, wait: 0.45 };
-        this.banner = keeperOut ? "Угловой от вратаря" : "Угловой";
+        this.banner = keeperOut ? tr("Угловой от вратаря", "Corner off the keeper") : tr("Угловой", "Corner");
       }
       this.bannerT = 1.5;
       this.giveDead(this.dead.side);
@@ -2146,7 +2550,7 @@ export class MatchSim implements FieldView {
         y: clamp(this.ball.y, -HALF_L + 1, HALF_L - 1),
         wait: 0.35,
       };
-      this.banner = "Аут";
+      this.banner = tr("Аут", "Throw-in");
       this.bannerT = 1.3;
       this.giveDead(side);
     }
@@ -2156,18 +2560,37 @@ export class MatchSim implements FieldView {
     const gk = this.sidePlayers((1 - scoring) as 0 | 1).find((p) => p.role === "GK");
     const speed = hypot(this.ball.vx, this.ball.vy);
     const placed = gk ? Math.abs(crossX - gk.x) : 9;
-    const near = placed < 1.15;
-    const open = placed > 2.35;
-    const oppKeeper = Boolean(gk && (this.referee || gk.side !== this.userSide));
-    let save = 0.06;
-    if (gk && oppKeeper) {
-      const base = near ? 0.42 + this.diff.save * 0.55 : open ? 0.04 + this.diff.save * 0.14 : 0.22 + this.diff.save * 0.4;
-      const diffPush = (this.diff.save - 0.22) * 0.2;
-      const offLine = Math.abs(gk.y - goalY) > 4.2 && open ? 0.4 : 1;
-      save = clamp((base + diffPush - speed / 150) * offLine, 0.04, 0.94);
-    } else if (gk) {
-      const wall = 0.2 + this.diff.mate * 0.58;
-      save = clamp((near ? wall : wall * 0.5) - speed / 120, 0.04, 0.82);
+    const near = placed < 1.45;
+    const open = placed > 3.2;
+    let save = 0.08;
+    if (gk) {
+      const read = this.keeperRead(gk);
+      const facingUser = !this.referee && gk.side !== this.userSide;
+      const myNet = !this.referee && gk.side === this.userSide && this.level !== "novice";
+      if (myNet) {
+        save = near ? 0.58 : open ? 0.5 : 0.54;
+      } else if (this.softKeepers()) {
+        const poke = near ? 0.16 : open ? 0.04 : 0.08;
+        const tier = this.level === "novice" ? 0.55 : 0.85;
+        save = clamp(poke * tier * (0.5 + read) - speed / 280, 0.015, this.level === "novice" ? 0.1 : 0.18);
+      } else if (this.referee) {
+        const base = near ? 0.28 : open ? 0.08 : 0.16;
+        save = clamp(base * (0.72 + read * 0.28) - speed / 220, 0.02, 0.3);
+      } else if (facingUser) {
+        const slip = this.level === "legend" ? 0.9 : this.level === "world" ? 0.94 : 1;
+        const skill = 0.35 + this.diff.save * 0.7;
+        const base = near ? 0.5 + skill * 0.42 : open ? 0.22 + skill * 0.4 : 0.34 + skill * 0.42;
+        const offLine = Math.abs(gk.y - goalY) > 6.5 ? 0.62 : 1;
+        const cap = (0.68 + this.diff.save * 0.28) * slip;
+        save = clamp(base * slip * offLine * (0.75 + read * 0.25) - speed / 240, (0.12 + this.diff.save * 0.1) * slip, Math.min(0.96, cap));
+        if (slip < 1 && Math.random() < (this.level === "legend" ? 0.1 : 0.07)) save = Math.min(save, 0.08);
+      } else {
+        const threat = this.diff.acc;
+        const skill = threat >= 0.9 ? 0.42 : threat >= 0.7 ? 0.55 : 0.66;
+        const base = near ? 0.4 + skill * 0.4 : open ? 0.1 + skill * 0.28 : 0.2 + skill * 0.36;
+        const cap = threat >= 0.9 ? 0.48 : threat >= 0.7 ? 0.58 : 0.7;
+        save = clamp(base * (0.72 + read * 0.28) - speed / 220, 0.06, cap);
+      }
     }
     if (Math.random() < save && gk) {
       this.ball.x = crossX * 0.8;
@@ -2180,7 +2603,7 @@ export class MatchSim implements FieldView {
       this.ball.lastUid = gk.uid;
       this.ball.lastSide = gk.side;
       this.ball.kickAt = this.now;
-      this.banner = `Сейв! ${gk.name}`;
+      this.banner = tr(`Сейв! ${gk.name}`, `Save! ${gk.name}`);
       this.bannerT = 1.5;
       return;
     }
@@ -2205,7 +2628,7 @@ export class MatchSim implements FieldView {
     this.ball.vx *= 0.2;
     this.ball.vy *= 0.2;
     this.cam.shake = 1;
-    this.banner = own ? `Автогол. ${name}` : `Гол! ${name}`;
+    this.banner = own ? tr(`Автогол. ${name}`, `Own goal. ${name}`) : tr(`Гол! ${name}`, `Goal! ${name}`);
     this.bannerT = 3;
     audio.goal();
     this.spawnConfetti(scoring);
@@ -2213,8 +2636,10 @@ export class MatchSim implements FieldView {
   }
 
   private minuteMark() {
-    const secs = (this.clock / this.halfBase) * 45 * 60 + (this.half === 2 ? 45 * 60 : 0);
-    return `${Math.min(this.half === 2 ? 90 + this.added : 45, Math.floor(secs / 60) + 1)}'`;
+    const ratio = Math.min(1, this.halfBase > 0 ? this.clock / this.halfBase : 0);
+    const secs = ratio * 45 * 60 + (this.half === 2 ? 45 * 60 : 0);
+    const cap = this.half === 2 ? 90 : 45;
+    return `${Math.min(cap, Math.floor(secs / 60) + 1)}'`;
   }
 
   private spawnConfetti(side: 0 | 1) {
@@ -2254,12 +2679,12 @@ export class MatchSim implements FieldView {
   }
 
   private timeLabel() {
-    const halfSeconds = (this.clock / this.halfBase) * 45 * 60;
+    const ratio = Math.min(1, this.halfBase > 0 ? this.clock / this.halfBase : 0);
+    const halfSeconds = ratio * 45 * 60;
     let m = Math.floor(halfSeconds / 60);
     const s = Math.floor(halfSeconds % 60);
     if (this.half === 2) m += 45;
-    const tag = this.added > 0 && this.half === 2 && m >= 90 ? `+${this.added}` : "";
-    return `${String(Math.min(m, 90 + this.added)).padStart(2, "0")}:${String(s).padStart(2, "0")}${tag}`;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }
 
   snapshot(): Snap {
@@ -2327,7 +2752,11 @@ export class MatchSim implements FieldView {
       locked: this.lockControl,
       referee: this.referee,
       call: this.incident?.kind ?? "",
-      callText: this.incident ? (this.incident.kind === "foul" ? `${this.incident.by} против ${this.incident.victim}` : this.incident.by) : "",
+      callText: this.incident
+        ? this.incident.kind === "offside"
+          ? `${this.incident.by} — возможный офсайд`
+          : `${this.incident.by} против ${this.incident.victim}${this.incident.inBox ? " · штрафная" : " · в поле"}`
+        : "",
       refCorrect: this.refCorrect,
       refWrong: this.refWrong,
       weather: this.weather,
@@ -2355,7 +2784,22 @@ export class MatchSim implements FieldView {
       homeSwatch: [this.home.home, this.home.away],
       awaySwatch: [this.away.home, this.away.away],
       critic: this.critic(),
+      canSwitch: !this.lockControl && !this.referee && !this.teamHasBall(this.userSide),
+      canSub: !this.lockControl && !this.referee && this.teamHasBall(this.userSide),
     };
+  }
+
+  /** Easy keepers leave a gap. From Professional up they read the shot. */
+  private softKeepers() {
+    return !this.referee && (this.level === "novice" || this.level === "amateur");
+  }
+
+  private keeperRead(p: RT) {
+    if (this.referee) return 0.48;
+    if (this.level === "novice") return 0.18;
+    if (this.level === "amateur") return 0.3;
+    if (p.side === this.userSide) return 0.48;
+    return clamp(0.62 + this.diff.save * 0.38, 0.74, 1);
   }
 
   private critic(): Snap["critic"] {
@@ -2454,6 +2898,32 @@ export function selfTest() {
   const me = sim.players.find((q) => q.uid === sim.controlledId)!;
   const near = sim.players.filter((q) => q.side === 1 && q.on && Math.hypot(q.x - me.x, q.y - me.y) < 9).length;
   if (near > 2) throw new Error(`swarm ${near}`);
+  const hunt = new MatchSim({ homeId: "KHM", awayId: "ZNM", halfMin: 3, difficulty: "novice" });
+  hunt.setSideKit(0, "primary");
+  hunt.setSideKit(1, "inverse");
+  hunt.beginPlay();
+  for (const q of hunt.players) {
+    if (q.side !== 0) continue;
+    q.x = -18;
+    q.y = -36;
+    q.vx = 0;
+    q.vy = 0;
+  }
+  hunt.ball.owner = null;
+  hunt.ball.x = 0;
+  hunt.ball.y = 24;
+  hunt.ball.vx = 0;
+  hunt.ball.vy = 0;
+  hunt.ball.z = 0;
+  hunt.ball.lastSide = 0;
+  hunt.dead = null;
+  let hunted = false;
+  for (let i = 0; i < 180; i++) {
+    hunt.step(1 / 60);
+    const onIt = hunt.players.some((q) => q.side === 1 && q.on && !q.red && (hunt.ball.owner === q.uid || Math.hypot(q.x - hunt.ball.x, q.y - hunt.ball.y) < 3.2));
+    if (onIt) hunted = true;
+  }
+  if (!hunted) throw new Error("novice left the loose ball");
   const p = sim.players.find((q) => q.uid === sim.controlledId)!;
   p.x = 0;
   p.y = 40;
@@ -2528,5 +2998,25 @@ export function selfTest() {
     slots.set(q.slot, (slots.get(q.slot) ?? 0) + 1);
   }
   if ([...slots.values()].some((n) => n !== 1)) throw new Error("away slots collided");
+  const clocked = new MatchSim({ homeId: "KHM", awayId: "ZNM", halfMin: 0.5, difficulty: "novice" });
+  clocked.setSideKit(0, "primary");
+  clocked.setSideKit(1, "inverse");
+  clocked.beginPlay();
+  const phaseOf = () => clocked.phase as string;
+  let steps = 0;
+  while (phaseOf() === "play" || phaseOf() === "goal") {
+    clocked.step(1 / 60);
+    if (++steps > 4000) break;
+  }
+  if (phaseOf() !== "halftime") throw new Error(`half drifted ${phaseOf()} ${clocked.clock}`);
+  if (Math.abs(clocked.clock - clocked.halfLen) > 0.02) throw new Error(`clock ${clocked.clock} != ${clocked.halfLen}`);
+  clocked.continueHalf();
+  steps = 0;
+  while (phaseOf() === "play" || phaseOf() === "goal") {
+    clocked.step(1 / 60);
+    if (++steps > 4000) break;
+  }
+  if (phaseOf() !== "fulltime") throw new Error(`full drifted ${phaseOf()}`);
+  if (clocked.snapshot().time !== "90:00") throw new Error(`time ${clocked.snapshot().time}`);
   return "ok";
 }

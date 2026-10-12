@@ -2,7 +2,7 @@ import { i as __toESM } from "../_runtime.mjs";
 import { K as require_react, _ as createFileRoute, b as require_jsx_runtime, d as Scripts, f as HeadContent, g as lazyRouteComponent, h as Outlet, m as createRouter, v as createRootRoute, y as useRouter } from "../_libs/@tanstack/react-router+[...].mjs";
 import { t as TriangleAlert } from "../_libs/lucide-react.mjs";
 import { a as union, i as string, n as number, r as object, t as literal } from "../_libs/zod.mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/router-D7pLqEl5.js
+//#region node_modules/.nitro/vite/services/ssr/assets/router-Bh82vYuv.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
 var FALLBACK_MESSAGE = "An unexpected error occurred. Try reloading the page.";
@@ -330,8 +330,8 @@ function PreviewHostBridge() {
 	}, [router]);
 	return null;
 }
-var styles_default = "/assets/styles-i6pekfa8.css";
-var APP_NAME = "Чувашский мяч 2026";
+var styles_default = "/assets/styles-CPwIFLFz.css";
+var APP_NAME = "Родной мяч";
 /** Same public-host gate as the share injector's og:image origin. */
 function shareHost() {
 	const raw = String("").split(",")[0]?.trim().split(":")[0]?.toLowerCase() ?? "";
@@ -347,12 +347,12 @@ var Route$1 = createRootRoute({
 			{ charSet: "utf-8" },
 			{
 				name: "viewport",
-				content: "width=device-width, initial-scale=1, viewport-fit=cover"
+				content: "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
 			},
 			{ title: APP_NAME },
 			{
 				name: "description",
-				content: "Чувашская Премьер-Лига 2026. Ночной футбол, быстрые матчи и карьера за клуб."
+				content: "Родной мяч. Три лиги, ночной футбол, быстрые матчи и карьера за клуб."
 			},
 			{
 				name: "theme-color",
@@ -403,7 +403,7 @@ var Route$1 = createRootRoute({
 		] })]
 	})
 });
-var $$splitComponentImporter = () => import("./routes-DsRTBPMs.mjs");
+var $$splitComponentImporter = () => import("./routes-ZmZBLKrA.mjs");
 var rootRouteChildren = { IndexRoute: createFileRoute("/")({ component: lazyRouteComponent($$splitComponentImporter, "component") }).update({
 	id: "/",
 	path: "/",
